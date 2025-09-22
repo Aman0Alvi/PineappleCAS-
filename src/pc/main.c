@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include <string.h>
+#include <limits.h>  /* for INT_MIN */
 
 #include "../ast.h"
 #include "../parser.h"
@@ -19,6 +20,7 @@
 #include "../dbg.h"
 
 #include "../cas/cas.h"
+#include "../cas/integral.h"  /* antiderivative() */
 
 #include "tests.h"
 
@@ -31,6 +33,7 @@ void display_help() {
     printf("\tfactor [expression]\t\tFactors expression\n");
     printf("\texpand [expression]\t\tExpands expression\n");
     printf("\tderivative [expression] [respect to] [(optional) eval at]\n");
+    printf("\tantideriv [expression] [respect to]\tComputes an antiderivative (indefinite integral)\n");
 }
 
 /*Trim null terminated string*/
@@ -43,7 +46,7 @@ uint8_t *trim(char *input, unsigned *len) {
             trimmed_len++;
     }
 
-    trimmed = malloc(trimmed_len * sizeof(uint8_t));
+    trimmed = (uint8_t*)malloc(trimmed_len * sizeof(uint8_t));
 
     for(i = 0; i < strlen(input) + 1; i++) {
         if(input[i] != ' ' && input[i] != '\t')
@@ -54,6 +57,165 @@ uint8_t *trim(char *input, unsigned *len) {
 
     return trimmed;
 }
+
+/* =========================
+ * Degree-based sorting helpers (used only by CLI antideriv)
+ * ========================= */
+
+/* Return a small integer value if n is an exact small integer in [-32, 32], else INT_MIN */
+static int small_int_value_if_integer(pcas_ast_t *n) {
+    int k;
+    if (!n || n->type != NODE_NUMBER) return INT_MIN;
+    for (k = -32; k <= 32; ++k) {
+        if (mp_rat_compare_value(n->op.num, k, 1) == 0) return k;
+    }
+    return INT_MIN;
+}
+
+/* Recursively compute a crude "degree" of expr w.r.t. var. */
+static int degree_wrt(pcas_ast_t *expr, pcas_ast_t *var) {
+    OperatorType op;
+    pcas_ast_t *ch;
+    int d, best, acc, n;
+
+    if (!expr) return 0;
+
+    if (expr->type == NODE_SYMBOL) {
+        if (ast_Compare(expr, var)) return 1;
+        return 0;
+    }
+    if (expr->type == NODE_NUMBER) return 0;
+
+    if (expr->type != NODE_OPERATOR) return 0;
+
+    op = optype(expr);
+
+    if (op == OP_ADD) {
+        best = INT_MIN;
+        for (ch = ast_ChildGet(expr, 0); ch != NULL; ch = ch->next) {
+            d = degree_wrt(ch, var);
+            if (d > best) best = d;
+        }
+        if (best == INT_MIN) best = 0;
+        return best;
+    }
+
+    if (op == OP_MULT) {
+        acc = 0;
+        for (ch = ast_ChildGet(expr, 0); ch != NULL; ch = ch->next) {
+            d = degree_wrt(ch, var);
+            acc += d;
+        }
+        return acc;
+    }
+
+    /* >>> ADD THIS BLOCK <<< */
+    if (op == OP_DIV) {
+        pcas_ast_t *num, *den;
+        int dn, dd;
+        num = ast_ChildGet(expr, 0);
+        den = ast_ChildGet(expr, 1);
+        dn = degree_wrt(num, var);
+        dd = degree_wrt(den, var);
+        if (dd == 0) return dn;   /* constant denom -> same degree as numerator */
+        return dn - dd;           /* general heuristic */
+    }
+    /* <<< END NEW BLOCK <<< */
+
+    if (op == OP_POW) {
+        pcas_ast_t *base = ast_ChildGet(expr, 0);
+        pcas_ast_t *expo = ast_ChildGet(expr, 1);
+        if (ast_Compare(base, var)) {
+            n = small_int_value_if_integer(expo);
+            if (n != INT_MIN) return n;          /* x^n -> n */
+            return 2;                             /* x^(something) -> rank above x */
+        }
+        d = degree_wrt(base, var);
+        if (d == 0) {
+            if (degree_wrt(expo, var) != 0) return 1;
+            return 0;
+        }
+        return d + 1;
+    }
+
+    /* For unary funcs like sin/cos/ln/... just propagate the argument's degree */
+    if (is_op_function(op)) {
+        pcas_ast_t *arg = ast_ChildGet(expr, 0);
+        return degree_wrt(arg, var);
+    }
+
+    return 0;
+}
+
+/* Sort children of a single OP_ADD node by descending degree wrt var. */
+static void sort_one_sum_desc_by_degree(pcas_ast_t *sum, pcas_ast_t *var) {
+    pcas_ast_t *ch;
+    pcas_ast_t **arr;
+    int *deg;
+    int i, j, nchildren = 0;
+
+    if (!sum || sum->type != NODE_OPERATOR || optype(sum) != OP_ADD) return;
+
+    /* count children */
+    for (ch = ast_ChildGet(sum, 0); ch != NULL; ch = ch->next) nchildren++;
+    if (nchildren <= 1) return;
+
+    arr = (pcas_ast_t**)malloc(sizeof(pcas_ast_t*) * nchildren);
+    deg = (int*)malloc(sizeof(int) * nchildren);
+
+    /* fill arrays */
+    i = 0;
+    for (ch = ast_ChildGet(sum, 0); ch != NULL; ch = ch->next) {
+        arr[i] = ch;
+        deg[i] = degree_wrt(ch, var);
+        i++;
+    }
+
+    /* insertion sort by descending degree; stable on equal degrees */
+    for (i = 1; i < nchildren; ++i) {
+        pcas_ast_t *save_node = arr[i];
+        int save_deg = deg[i];
+        j = i - 1;
+        while (j >= 0 && deg[j] < save_deg) {
+            arr[j + 1] = arr[j];
+            deg[j + 1] = deg[j];
+            j--;
+        }
+        arr[j + 1] = save_node;
+        deg[j + 1] = save_deg;
+    }
+
+    /* Rebuild a new sum with children in the desired order (using copies) */
+    {
+        pcas_ast_t *sorted = ast_MakeOperator(OP_ADD);
+        void replace_node(pcas_ast_t*, pcas_ast_t*); /* from simplify.c */
+        for (i = 0; i < nchildren; ++i) {
+            ast_ChildAppend(sorted, ast_Copy(arr[i]));
+        }
+        replace_node(sum, sorted);
+    }
+
+    free(arr);
+    free(deg);
+}
+
+/* Recursively sort every OP_ADD inside e by descending degree wrt var */
+static void sort_all_sums_desc_by_degree(pcas_ast_t *e, pcas_ast_t *var) {
+    pcas_ast_t *ch;
+    if (!e) return;
+    if (e->type == NODE_OPERATOR) {
+        for (ch = ast_ChildGet(e, 0); ch != NULL; ch = ch->next) {
+            sort_all_sums_desc_by_degree(ch, var);
+        }
+        if (optype(e) == OP_ADD) {
+            sort_one_sum_desc_by_degree(e, var);
+        }
+    }
+}
+
+/* =========================
+ * End degree-based sorting helpers
+ * ========================= */
 
 int run_gcd(int argc, char **argv) {
 
@@ -370,9 +532,6 @@ int run_derivative(int argc, char **argv) {
     pcas_error_t err;
     pcas_ast_t *e = NULL, *respect_to = NULL, *at = NULL;
 
-    uint8_t *output;
-    unsigned output_len;
-
     if(argc <= 3) {
         display_help();
         return -1;
@@ -433,6 +592,90 @@ int run_derivative(int argc, char **argv) {
         dbg_print_tree(e, 4);
         printf("\n");
 
+        /* print result */
+        {
+            uint8_t *output2;
+            unsigned output_len2;
+            output2 = export_to_binary(e, &output_len2, str_table, &err);
+            if(err == E_SUCCESS && output2 != NULL) {
+                printf("Output: ");
+                printf("%.*s\n", output_len2, output2);
+                free(output2);
+            }
+        }
+    }
+
+    ast_Cleanup(e);
+    ast_Cleanup(respect_to);
+    ast_Cleanup(at);
+
+    return 0;
+}
+
+/* Antiderivative CLI with degree-sorted sum printing */
+int run_antideriv(int argc, char **argv) {
+
+    uint8_t *trimmed;
+    unsigned trimmed_len;
+
+    pcas_error_t err;
+    pcas_ast_t *e = NULL, *respect_to = NULL;
+
+    uint8_t *output;
+    unsigned output_len;
+
+    if(argc <= 3) {
+        display_help();
+        return -1;
+    }
+
+    /* parse expression */
+    trimmed = trim(argv[2], &trimmed_len);
+    printf("Parsing \"%s\"\n", trimmed);
+    e = parse(trimmed, trimmed_len, str_table, &err);
+    printf("%s\n", error_text[err]);
+    free(trimmed);
+
+    /* parse variable */
+    if(err == E_SUCCESS) {
+        trimmed = trim(argv[3], &trimmed_len);
+        printf("Parsing \"%s\"\n", trimmed);
+        respect_to = parse(trimmed, trimmed_len, str_table, &err);
+        printf("%s\n", error_text[err]);
+        free(trimmed);
+    }
+
+    if(err == E_SUCCESS && e != NULL && respect_to != NULL) {
+
+        printf("\n");
+        dbg_print_tree(e, 4);
+
+        printf("\n");
+
+        printf("Simplifying...\n\n");
+
+        simplify(e, SIMP_ALL);
+
+        dbg_print_tree(e, 4);
+
+        printf("\n");
+
+        printf("Taking antiderivative...\n");
+
+        antiderivative(e, respect_to);
+
+        printf("Simplifying...\n\n");
+
+        /* Normal simplify + canonicalize */
+        simplify(e, SIMP_ALL);
+        simplify_canonical_form(e, CANONICAL_ALL);
+
+        /* Now sort all sums by descending degree for nicer printing */
+        sort_all_sums_desc_by_degree(e, respect_to);
+
+        dbg_print_tree(e, 4);
+        printf("\n");
+
         output = export_to_binary(e, &output_len, str_table, &err);
 
         if(err == E_SUCCESS && output != NULL) {
@@ -446,7 +689,6 @@ int run_derivative(int argc, char **argv) {
 
     ast_Cleanup(e);
     ast_Cleanup(respect_to);
-    ast_Cleanup(at);
 
     return 0;
 }
@@ -461,6 +703,7 @@ int main(int argc, char **argv) {
         else if(!strcmp(argv[1], "factor"))     ret = run_factor(argc, argv);
         else if(!strcmp(argv[1], "expand"))     ret = run_expand(argc, argv);
         else if(!strcmp(argv[1], "derivative")) ret = run_derivative(argc, argv);
+        else if(!strcmp(argv[1], "antideriv"))  ret = run_antideriv(argc, argv);
         else {
             display_help();
             return -1;
