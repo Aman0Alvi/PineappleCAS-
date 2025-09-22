@@ -8,6 +8,7 @@
 #include "../parser.h"
 #include "../ast.h"
 #include "../cas/cas.h"
+#include "../cas/integral.h"   /* << NEW: antiderivative() */
 
 #include "../dbg.h"
 
@@ -21,7 +22,7 @@ static char *trim(char *str) {
             trimmed_len++;
     }
 
-    trimmed = malloc(trimmed_len * sizeof(char));
+    trimmed = (char*)malloc(trimmed_len * sizeof(char));
 
     for(i = 0; i < strlen(str) + 1; i++) {
         if(str[i] != ' ' && str[i] != '\t' && str[i] != '\n')
@@ -38,6 +39,7 @@ TestType resolve_type(char *type) {
     if(!strcmp(type, "factor"))     return TEST_FACTOR;
     if(!strcmp(type, "expand"))     return TEST_EXPAND;
     if(!strcmp(type, "deriv"))      return TEST_DERIV;
+    if(!strcmp(type, "antideriv"))  return TEST_ANTIDERIV; /* << NEW */
 
     return TEST_INVALID;
 }
@@ -45,7 +47,7 @@ TestType resolve_type(char *type) {
 test_t *test_Parse(char *line) {
     char *pt, *trimmed;
     unsigned i;
-    test_t *t = malloc(sizeof(test_t));
+    test_t *t = (test_t*)malloc(sizeof(test_t));
 
     pt = strtok(line, ";");
     for(i = 0; i < 3; i++) {
@@ -58,8 +60,8 @@ test_t *test_Parse(char *line) {
         trimmed = trim(pt);
 
         if(i == 0)      t->type = resolve_type(trimmed);
-        else if(i == 1) strncpy(t->arg1, trimmed, MAX_PAR);
-        else if(i == 2) strncpy(t->arg2, trimmed, MAX_PAR);
+        else if(i == 1) { strncpy(t->arg1, trimmed, MAX_PAR); t->arg1[MAX_PAR-1] = '\0'; }
+        else if(i == 2) { strncpy(t->arg2, trimmed, MAX_PAR); t->arg2[MAX_PAR-1] = '\0'; }
 
         free(trimmed);
 
@@ -69,6 +71,7 @@ test_t *test_Parse(char *line) {
     if(pt != NULL) {
         trimmed = trim(pt);
         strncpy(t->arg3, trimmed, MAX_PAR);
+        t->arg3[MAX_PAR-1] = '\0';
         free(trimmed);
     } else {
         t->arg3[0] = '\0';
@@ -83,7 +86,7 @@ test_t **test_Load(char *file, unsigned *len) {
     test_t **arr;
     char line[MAX_LINE];
 
-    arr = malloc(sizeof(test_t**) * MAX_TESTS);
+    arr = (test_t**)malloc(sizeof(test_t**) * MAX_TESTS);
 
     f = fopen(file, "r");
 
@@ -198,6 +201,7 @@ bool test_Run(test_t *t) {
 
         passed = check(t, actual, expected);
         break;
+
     case TEST_GCD:
         if(c == NULL) {
             printf("Test failed on line %u. Empty third argument.\n", t->line);
@@ -218,6 +222,7 @@ bool test_Run(test_t *t) {
 
         ast_Cleanup(actual);
         break;
+
     case TEST_FACTOR:
         expected = b;
         actual = a;
@@ -230,6 +235,7 @@ bool test_Run(test_t *t) {
 
         passed = check(t, actual, expected);
         break;
+
     case TEST_EXPAND:
         expected = b;
         actual = a;
@@ -243,6 +249,7 @@ bool test_Run(test_t *t) {
 
         passed = check(t, actual, expected);
         break;
+
     case TEST_DERIV: {
 
         if(c == NULL) {
@@ -259,12 +266,35 @@ bool test_Run(test_t *t) {
         simplify(expected, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL);
 
         /*Don't simplify derivatives because derivative() should have done that*/
-        simplify(actual, SIMP_ALL ^ SIMP_DERIV);
+        simplify(actual, (unsigned short)(SIMP_ALL ^ SIMP_DERIV));
 
         passed = check(t, actual, expected);
 
         break;
     }
+
+    case TEST_ANTIDERIV: { /* << NEW */
+        if(c == NULL) {
+            printf("Test failed on line %u. Empty third argument.\n", t->line);
+            break;
+        }
+
+        actual = a;
+        expected = c;
+
+        /* Compute antiderivative of a with respect to b (in place) */
+        antiderivative(actual, b);
+
+        /* Normalize expected to ease comparison (same as other branches) */
+        simplify(expected, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL);
+
+        /* For integrals we allow normal simplification (no derivative post-pass) */
+        simplify(actual, SIMP_ALL);
+
+        passed = check(t, actual, expected);
+        break;
+    }
+
     default:
         break;
     }
