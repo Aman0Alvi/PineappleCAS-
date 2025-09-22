@@ -14,6 +14,7 @@
 #include "../cas/cas.h"
 #include "../cas/identities.h"
 #include "../cas/derivative.h"
+#include "../cas/integral.h"
 
 #include "interface.h"
 
@@ -94,12 +95,13 @@ char *dropdown_entries[NUM_DROPDOWN_ENTRIES] = {
 };
 
 #define NUM_IO 2
-#define NUM_FUNCTION 5
+#define NUM_FUNCTION 6
 #define NUM_SIMPLIFY 7
 #define NUM_EVALUATE 5
 #define NUM_EXPAND 3
 #define NUM_DERIVATIVE 2
 #define NUM_HELP 0
+#define NUM_ANTIDERIVATIVE 2
 
 view_t *io_context[NUM_IO];
 view_t *function_context[NUM_FUNCTION];
@@ -108,6 +110,8 @@ view_t *evaluate_context[NUM_EVALUATE];
 view_t *expand_context[NUM_EXPAND];
 view_t *derivative_context[NUM_DERIVATIVE];
 view_t *help_context[1];
+view_t *antiderivative_context[NUM_ANTIDERIVATIVE];
+view_t *button_antiderivative;
 
 view_t *from_drop, *to_drop;
 
@@ -125,6 +129,7 @@ typedef enum {
     CONTEXT_EVALUATE,
     CONTEXT_EXPAND,
     CONTEXT_DERIVATIVE,
+    CONTEXT_ANTIDERIVATIVE,
     CONTEXT_HELP,
     NUM_CONTEXTS
 } Context;
@@ -136,12 +141,14 @@ unsigned elements_in_context[NUM_CONTEXTS] = {
     NUM_EVALUATE,
     NUM_EXPAND,
     NUM_DERIVATIVE,
+    NUM_ANTIDERIVATIVE,
     NUM_HELP
 };
 
 view_t **context_lookup[NUM_CONTEXTS] = {
     io_context, function_context, simplify_context,
     evaluate_context, expand_context, derivative_context,
+    antiderivative_context,
     help_context
 };
 
@@ -283,7 +290,7 @@ void draw_context(Context c) {
         gfx_PrintStringXY("Thanks Adriweb and Mateo", 115, 80 + 10 * 8);
         gfx_PrintStringXY("for help and contributions", 115, 80 + 10 * 9);
         gfx_PrintStringXY("to this project.", 115, 80 + 10 * 10);
-    } else if(c == CONTEXT_DERIVATIVE) {
+    } else if(c == CONTEXT_DERIVATIVE || c == CONTEXT_ANTIDERIVATIVE) {
         gfx_PrintStringXY("Respect to: ", 124, 80);
     }
 
@@ -320,6 +327,7 @@ void execute_simplify();
 void execute_evaluate();
 void execute_expand();
 void execute_derivative();
+void execute_antiderivative();
 
 /*the key lookup tables for os_GetCSC()*/
 const char alpha_table[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5C, 0x00, 0x57, 0x52, 0x4D, 0x48, 0x00, 0x00, 0x00, 0x40, 0x56, 0x51, 0x4C, 0x47, 0x00, 0x00, 0x00, 0x5A, 0x55, 0x50, 0x4B, 0x46, 0x43, 0x00, 0x00, 0x59, 0x54, 0x4F, 0x4A, 0x45, 0x42, 0x58, 0x00, 0x58, 0x53, 0x4E, 0x49, 0x44, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -447,6 +455,7 @@ void handle_input(uint8_t key) {
                 else if(v == button_evaluate)   execute_evaluate();
                 else if(v == button_expand)     execute_expand();
                 else if(v == button_derivative) execute_derivative();
+                else if(v == button_antiderivative) execute_antiderivative();
                 break;
             default:
                 break;
@@ -473,11 +482,12 @@ void gui_Init() {
     io_context[0] = from_drop = view_create_dropdown(LCD_WIDTH / 4 + 20 - 25, 14 + 8 + 4, 0);
     io_context[1] = to_drop = view_create_dropdown(LCD_WIDTH / 4 * 3 - 20 - 25, 14 + 8 + 4, 1);
 
-    function_context[0] = view_create_label(26, 80, "Simplify");
-    function_context[1] = view_create_label(26, 96, "Evaluate");
+    function_context[0] = view_create_label(26, 80,  "Simplify");
+    function_context[1] = view_create_label(26, 96,  "Evaluate");
     function_context[2] = view_create_label(26, 112, "Expand");
     function_context[3] = view_create_label(26, 128, "Derivative");
-    function_context[4] = view_create_label(26, 144, "Help");
+    function_context[4] = view_create_label(26, 144, "Antiderivative"); /* NEW */
+    function_context[5] = view_create_label(26, 160, "Help");
 
     simplify_context[0] = view_create_checkbox(124, 80 + 12 * 0, "Basic identities", true);
     simplify_context[1] = view_create_checkbox(124, 80 + 12 * 1, "Trig identities", true);
@@ -499,6 +509,9 @@ void gui_Init() {
 
     derivative_context[0] = view_create_charselect(124 + 90, 80 - (16 - TEXT_HEIGHT) / 2);
     derivative_context[1] = button_derivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Differentiate");
+
+    antiderivative_context[0] = view_create_charselect(124 + 90, 80 - (16 - TEXT_HEIGHT) / 2);
+    antiderivative_context[1] = button_antiderivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Antideriv");
 
     console_button = view_create_button(LCD_WIDTH / 2, LCD_HEIGHT - LCD_HEIGHT / 6 - 20, "Close");
 
@@ -938,6 +951,68 @@ void execute_derivative() {
     console_button->active = true;
     view_draw(console_button);
 }
+
+void execute_antiderivative() {
+    char buffer[50];
+
+    pcas_ast_t *expression;
+    pcas_error_t err;
+
+    console_write("Parsing input...");
+
+    expression = parse_from_dropdown_index(from_drop->index, &err);
+
+    if(err == E_SUCCESS) {
+
+        if(expression != NULL) {
+            pcas_ast_t *respect_to;
+            char *theta = "theta";
+
+            /* We treat the @ character as theta (same convention as derivative panel) */
+            if(antiderivative_context[0]->character == '@') {
+                respect_to = parse((uint8_t*)theta, strlen(theta), str_table, &err);
+            } else {
+                respect_to = parse((uint8_t*)&antiderivative_context[0]->character, 1, str_table, &err);
+            }
+
+            console_write("Integrating...");
+
+            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL);
+
+            antiderivative(expression, respect_to);
+
+            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
+            simplify_canonical_form(expression, CANONICAL_ALL);
+
+            console_write("Exporting...");
+
+            write_to_dropdown_index(to_drop->index, expression, &err);
+
+            ast_Cleanup(expression);
+            ast_Cleanup(respect_to);
+
+            if(err == E_SUCCESS) {
+                console_write("Success.");
+            } else {
+                sprintf(buffer, "Failed. %s.", error_text[err]);
+                console_write(buffer);
+            }
+
+        } else {
+            console_write("Failed. Empty input.");
+        }
+
+    } else {
+        sprintf(buffer, "Failed. %s.", error_text[err]);
+        console_write(buffer);
+        if(from_drop->index == 20)
+            console_write("Make sure Ans is a string.");
+    }
+
+    console_button->active = true;
+    view_draw(console_button);
+}
+
 
 #else
 typedef int make_iso_compilers_happy;
