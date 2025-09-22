@@ -17,6 +17,7 @@ typedef enum {
     TEST_FACTOR,
     TEST_EXPAND,
     TEST_DERIV,
+    TEST_ANTIDERIV,
 
     TEST_INVALID
 } TestType;
