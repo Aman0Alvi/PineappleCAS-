@@ -1,0 +1,4 @@
+/workspaces/PineappleCAS-/build/CMakeFiles/pineapple.dir
+/workspaces/PineappleCAS-/build/CMakeFiles/test.dir
+/workspaces/PineappleCAS-/build/CMakeFiles/edit_cache.dir
+/workspaces/PineappleCAS-/build/CMakeFiles/rebuild_cache.dir

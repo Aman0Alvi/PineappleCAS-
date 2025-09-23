@@ -67,7 +67,7 @@ pcas_ast_t *leftmost(pcas_ast_t *e) {
     return e;
 }
 
-/*Returns length of buffer. Writes to buffer is buffer != NULL*/
+/*Returns length of buffer. Writes to buffer if buffer != NULL*/
 static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct Identifier *lookup, pcas_error_t *err) {
 
     switch(e->type) {
@@ -155,7 +155,6 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
                     the problem is reintroduced when we abs(-1) during addition exporting*/
                     continue;
                 } else {
-                    /*For example, */
                     if(need_paren(e, child) || root_special_case) add_token(TOK_OPEN_PAR);
                     index = _to_binary(child, data, index, lookup, err);
                     if(need_paren(e, child) || root_special_case) add_token(TOK_CLOSE_PAR);
@@ -181,25 +180,48 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
             }
 
             break;
-        } case OP_DIV:
-          case OP_POW: {
-            pcas_ast_t *a, *b;
+        }
+        case OP_DIV: {
+            /* emit a true fraction: numerator / denominator */
+            pcas_ast_t *num = ast_ChildGet(e, 0);
+            pcas_ast_t *den = ast_ChildGet(e, 1);
 
-            a = ast_ChildGet(e, 0);
-            b = ast_ChildGet(e, 1);
+            if (need_paren(e, num)) add_token(TOK_OPEN_PAR);
+            index = _to_binary(num, data, index, lookup, err);
+            if (need_paren(e, num)) add_token(TOK_CLOSE_PAR);
 
-            if(need_paren(e, a)) add_token(TOK_OPEN_PAR);
-            index = _to_binary(a, data, index, lookup, err);
-            if(need_paren(e, a)) add_token(TOK_CLOSE_PAR);
+            add_token(TOK_FRACTION);
 
-            add_token(optype(e) == OP_DIV ? TOK_FRACTION : TOK_POWER);
+            if (need_paren(e, den)) add_token(TOK_OPEN_PAR);
+            index = _to_binary(den, data, index, lookup, err);
+            if (need_paren(e, den)) add_token(TOK_CLOSE_PAR);
+            break;
+        }
 
-            if((optype(e) == OP_POW && b->type != NODE_NUMBER && b->type != NODE_SYMBOL) || need_paren(e, b)) add_token(TOK_OPEN_PAR);
-            index = _to_binary(b, data, index, lookup, err);
-            if((optype(e) == OP_POW && b->type != NODE_NUMBER && b->type != NODE_SYMBOL) || need_paren(e, b)) add_token(TOK_CLOSE_PAR);
+        case OP_POW: {
+            pcas_ast_t *base = ast_ChildGet(e, 0);
+            pcas_ast_t *expo = ast_ChildGet(e, 1);
+
+            /* Always export as base ^ expo for TI too; no special sqrt rewrite */
+            if (need_paren(e, base)) add_token(TOK_OPEN_PAR);
+            index = _to_binary(base, data, index, lookup, err);
+            if (need_paren(e, base)) add_token(TOK_CLOSE_PAR);
+
+            add_token(TOK_POWER);
+
+            /* Parenthesize non-atom exponents for safety */
+            if ((expo->type != NODE_NUMBER && expo->type != NODE_SYMBOL) || need_paren(e, expo))
+                add_token(TOK_OPEN_PAR);
+
+            index = _to_binary(expo, data, index, lookup, err);
+
+            if ((expo->type != NODE_NUMBER && expo->type != NODE_SYMBOL) || need_paren(e, expo))
+                add_token(TOK_CLOSE_PAR);
 
             break;
-        } case OP_ROOT: {
+        }
+
+        case OP_ROOT: {
             pcas_ast_t *a, *b;
 
             a = ast_ChildGet(e, 0);
@@ -252,7 +274,8 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
             add_token(TOK_CLOSE_PAR);
 
             break;
-        }  case OP_DERIV: {
+        }
+        case OP_DERIV: {
             pcas_ast_t *a, *b, *c;
 
             a = ast_ChildGet(e, 0);
@@ -268,8 +291,8 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
             add_token(TOK_CLOSE_PAR);
 
             break;
-        } case OP_FACTORIAL: {
-
+        }
+        case OP_FACTORIAL: {
             pcas_ast_t *a;
 
             a = ast_ChildGet(e, 0);
@@ -281,7 +304,8 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
             add_token(TOK_FACTORIAL);
 
             break;
-        } default:
+        }
+        default:
 
             switch(optype(e)) {
                 case OP_INT:        add_token(TOK_INT);      break;
@@ -325,7 +349,7 @@ uint8_t *export_to_binary(pcas_ast_t *e, unsigned *len, struct Identifier *looku
         return NULL;
     }
 
-    data = malloc(*len);
+    data = (uint8_t*)malloc(*len);
     _to_binary(e, data, 0, lookup, err);
 
     return data;

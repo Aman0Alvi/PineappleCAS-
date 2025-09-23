@@ -43,7 +43,7 @@ void draw_background() {
     gfx_Rectangle(1, 1, LCD_WIDTH - 2, LCD_HEIGHT - 2);
     gfx_HorizLine(1, LCD_HEIGHT - 21, LCD_WIDTH - 2);
 
-    draw_string_centered("PineappleCAS v1.1 by Nathan Farlow", LCD_WIDTH / 2, LCD_HEIGHT - 14);
+    draw_string_centered("PineappleCAS v1.3 by Nathan Farlow", LCD_WIDTH / 2, LCD_HEIGHT - 14);
 
     draw_string_centered("Input", LCD_WIDTH / 4 + 20, 14);
     draw_string_centered("Output", LCD_WIDTH / 4 * 3 - 20, 14);
@@ -156,6 +156,8 @@ Context current_context = CONTEXT_FUNCTION;
 unsigned active_index = 0;
 unsigned function_index = 0;
 
+static void write_strN_ascii_gui(uint8_t N, const uint8_t *txt, unsigned len);
+static uint8_t *rewrite_sqrt_to_pow_ascii_gui(const uint8_t *in, unsigned in_len, unsigned *out_len);
 void draw_label(view_t *v) {
     gfx_PrintStringXY(v->text, v->x, v->y + v->h / 2 - TEXT_HEIGHT / 2);
 }
@@ -951,6 +953,165 @@ void execute_derivative() {
     console_button->active = true;
     view_draw(console_button);
 }
+#include <fileioc.h>  // already included above; fine to keep once
+
+/* Build TI token for StrN (N = 0..9). Second byte is:
+   0..8 => Str1..Str9, and 9 => Str0. */
+static void build_str_token_gui(uint8_t N, uint8_t tok[4]) {
+    tok[0] = 0xAAu;
+    tok[2] = 0x00u;
+    tok[3] = 0x00u;
+    if (N == 0) tok[1] = 9;           /* Str0 */
+    else        tok[1] = (uint8_t)(N - 1); /* Str1..Str9 */
+}
+
+/* Write raw bytes (already tokenized with ti_table) to StrN so the OS displays them nicely. */
+static void write_strN_ascii_gui(uint8_t N, const uint8_t *bytes, unsigned len) {
+    uint8_t tok[4];
+    ti_var_t v;
+    if (!bytes || !len) return;
+    build_str_token_gui(N, tok);
+    v = ti_OpenVar((char*)tok, "w", OS_TYPE_STR);
+    if (v) { ti_Write(bytes, len, 1, v); ti_Close(v); }
+}
+
+/* Rewrite every "sqrt(<expr>)" into "(<expr>)^(1/2)" in an ASCII buffer. */
+static uint8_t *rewrite_sqrt_to_pow_ascii_gui(const uint8_t *in, unsigned in_len, unsigned *out_len) {
+    unsigned cap = in_len * 3 + 16;
+    uint8_t *out = (uint8_t*)malloc(cap);
+    unsigned oi = 0, i = 0;
+    if (!out) { *out_len = 0; return NULL; }
+
+    while (i < in_len) {
+        if (i + 5 <= in_len &&
+            in[i]=='s' && in[i+1]=='q' && in[i+2]=='r' && in[i+3]=='t' && in[i+4]=='(') {
+            unsigned depth = 0, inner_start;
+            i += 5; /* past "sqrt(" */
+            if (oi + 1 >= cap) { cap *= 2; out = (uint8_t*)realloc(out, cap); }
+            out[oi++] = '(';
+
+            inner_start = i;
+            for (; i < in_len; ++i) {
+                uint8_t c = in[i];
+                if (c=='(') depth++;
+                else if (c==')') {
+                    if (depth == 0) {
+                        unsigned inner_len = i - inner_start;
+                        if (oi + inner_len + 8 >= cap) { cap = oi + inner_len + 64; out = (uint8_t*)realloc(out, cap); }
+                        memcpy(out + oi, in + inner_start, inner_len);
+                        oi += inner_len;
+                        out[oi++]=')'; out[oi++]='^'; out[oi++]='(';
+                        out[oi++]='1'; out[oi++]='/'; out[oi++]='2'; out[oi++]=')';
+                        i++; /* consume ')' */
+                        break;
+                    } else depth--;
+                }
+            }
+        } else {
+            if (oi + 1 >= cap) { cap *= 2; out = (uint8_t*)realloc(out, cap); }
+            out[oi++] = in[i++];
+        }
+    }
+    *out_len = oi;
+    return out;
+}
+
+void execute_antiderivative() {
+    char buffer[50];
+
+    pcas_ast_t *expression;
+    pcas_error_t err;
+
+    console_write("Parsing input...");
+
+    expression = parse_from_dropdown_index(from_drop->index, &err);
+
+    if (err == E_SUCCESS) {
+
+        if (expression != NULL) {
+            pcas_ast_t *respect_to;
+            char *theta = "theta";
+
+            /* We treat the @ character as theta (same convention as derivative panel) */
+            if (antiderivative_context[0]->character == '@') {
+                respect_to = parse((uint8_t*)theta, strlen(theta), str_table, &err);
+            } else {
+                respect_to = parse((uint8_t*)&antiderivative_context[0]->character, 1, str_table, &err);
+            }
+
+            if (!(err == E_SUCCESS && respect_to)) {
+                console_write("Failed to parse variable of integration.");
+                if (expression) ast_Cleanup(expression);
+                return;
+            }
+
+            /* --- normalize sqrt(...) -> (...)^(1/2) before integrating (GUI path) --- */
+            {
+                pcas_error_t e2 = E_SUCCESS;
+                unsigned ascii_len = 0, rew_len = 0;
+
+                /* export current AST to ASCII using str_table (ASCII-like) */
+                uint8_t *ascii = export_to_binary(expression, &ascii_len, str_table, &e2);
+                if (e2 == E_SUCCESS && ascii) {
+                    /* use the helper defined above in this file */
+                    uint8_t *rew = rewrite_sqrt_to_pow_ascii_gui(ascii, ascii_len, &rew_len);
+                    free(ascii);
+
+                    if (rew && rew_len) {
+                        ast_Cleanup(expression);
+                        expression = parse(rew, rew_len, str_table, &e2);
+                        free(rew);
+                        if (!(e2 == E_SUCCESS && expression)) {
+                            console_write("Internal parse error after sqrt->pow.");
+                            ast_Cleanup(respect_to);
+                            return;
+                        }
+                    }
+                }
+            }
+            /* ----------------------------------------------------------------------- */
+
+            console_write("Integrating...");
+
+            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL);
+
+            antiderivative(expression, respect_to);
+
+            /* keep it conservative so (2X)^(3/2) survives */
+            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
+            simplify_canonical_form(expression, CANONICAL_ALL);
+
+            console_write("Exporting...");
+
+            write_to_dropdown_index(to_drop->index, expression, &err);
+
+            ast_Cleanup(expression);
+            ast_Cleanup(respect_to);
+
+            if (err == E_SUCCESS) {
+                console_write("Success.");
+            } else {
+                sprintf(buffer, "Failed. %s.", error_text[err]);
+                console_write(buffer);
+            }
+
+        } else {
+            console_write("Failed. Empty input.");
+        }
+
+    } else {
+        sprintf(buffer, "Failed. %s.", error_text[err]);
+        console_write(buffer);
+        if (from_drop->index == 20)
+            console_write("Make sure Ans is a string.");
+    }
+
+    console_button->active = true;
+    view_draw(console_button);
+}
+
+
+
 
 void execute_antiderivative() {
     char buffer[50];

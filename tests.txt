@@ -347,3 +347,11 @@ deriv; 18X/9 _ 8/2; X; 2
 
 deriv; (20 * 2)/X * 3*5X; X; 0
 deriv; 5 + 3X + X^2 _ 13/2X/X + sin(X)*3; X; 3 + 2X + 3cos(X)
+
+antideriv; X; X; X^2/2
+antideriv; 5; X; 5X
+antideriv; X^3 + 2X; X; X^4/4 + X^2
+antideriv; sin(X); X; -cos(X)
+antideriv; cos(X); X; sin(X)
+antideriv; 2^X; X; 2^X/ln(2)
+antideriv; X^(-1); X; ln(X)
