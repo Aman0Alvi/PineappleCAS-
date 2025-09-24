@@ -588,64 +588,6 @@ void interface_Antiderivative(arg_list *args) {
     tok_fix(&args->args[1], &args->arg_len[1]);
     tok_fix(&args->args[2], &args->arg_len[2]);
 
-    input      = args->args[1];
-    output     = args->args[2];
-    respect_to = args->args[3];
-
-    input_len      = args->arg_len[1];
-    output_len     = args->arg_len[2];
-    respect_to_len = args->arg_len[3];
-
-    interface_assert(tok_valid(input, input_len), "Not a valid input variable");
-    interface_assert(tok_valid(output, output_len), "Not a valid output variable");
-    interface_assert(valid_respect_to(respect_to, respect_to_len), "Not a valid \"respect to\" variable");
-
-    expression = parse_from_tok(input, &err);
-    interface_assert(err == E_SUCCESS && expression != NULL, NULL);
-
-    if (respect_to[0] == 'Z' + 1) {
-        respect_to_expr = parse((uint8_t*)theta, strlen(theta), str_table, &err);
-    } else {
-        respect_to_expr = parse(respect_to, respect_to_len, str_table, &err);
-    }
-    interface_assert(err == E_SUCCESS && respect_to_expr != NULL, NULL);
-
-    simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL);
-    antiderivative(expression, respect_to_expr);
-    simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
-    simplify_canonical_form(expression, CANONICAL_ALL);
-
-    write_to_tok(output, expression, &err);
-
-    ast_Cleanup(expression);
-    ast_Cleanup(respect_to_expr);
-
-    interface_assert(err == E_SUCCESS, NULL);
-
-    success();
-}
-
-
-
-/*
-    Syntax: ANTIDERIV,Y1,Y2,X
-
-    Computes an antiderivative (indefinite integral) with respect to 3rd argument
-*/
-void interface_Antiderivative(arg_list *args) {
-    pcas_ast_t *expression, *respect_to_expr;
-    pcas_error_t err;
-
-    uint8_t *input, *output, *respect_to;
-    unsigned input_len, output_len, respect_to_len;
-
-    char *theta = "theta";
-
-    interface_assert(args->amount >= 4, "Not enough arguments");
-
-    tok_fix(&args->args[1], &args->arg_len[1]);
-    tok_fix(&args->args[2], &args->arg_len[2]);
-
     input = args->args[1];
     output = args->args[2];
     respect_to = args->args[3];

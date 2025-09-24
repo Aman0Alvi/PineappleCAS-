@@ -101,7 +101,7 @@ char *dropdown_entries[NUM_DROPDOWN_ENTRIES] = {
 #define NUM_EXPAND 3
 #define NUM_DERIVATIVE 2
 #define NUM_HELP 0
-#define NUM_ANTIDERIVATIVE 2
+#define NUM_ANTIDERIVATIVE 3
 
 view_t *io_context[NUM_IO];
 view_t *function_context[NUM_FUNCTION];
@@ -111,6 +111,7 @@ view_t *expand_context[NUM_EXPAND];
 view_t *derivative_context[NUM_DERIVATIVE];
 view_t *help_context[1];
 view_t *antiderivative_context[NUM_ANTIDERIVATIVE];
+view_t *antideriv_ibp_checkbox;
 view_t *button_antiderivative;
 
 view_t *from_drop, *to_drop;
@@ -446,6 +447,12 @@ void handle_input(uint8_t key) {
             switch(v->type) {
             case GUI_CHECKBOX:
                 v->checked = !v->checked;
+
+                /* NEW: if this is our IBP checkbox, toggle the integrator */
+                if (v == antideriv_ibp_checkbox) {
+                    integral_set_ibp_enabled(v->checked);
+                }
+
                 draw_context(current_context);
                 break;
             case GUI_DROPDOWN:
@@ -480,6 +487,7 @@ void handle_input(uint8_t key) {
     }
 }
 
+
 void gui_Init() {
     io_context[0] = from_drop = view_create_dropdown(LCD_WIDTH / 4 + 20 - 25, 14 + 8 + 4, 0);
     io_context[1] = to_drop = view_create_dropdown(LCD_WIDTH / 4 * 3 - 20 - 25, 14 + 8 + 4, 1);
@@ -488,7 +496,7 @@ void gui_Init() {
     function_context[1] = view_create_label(26, 96,  "Evaluate");
     function_context[2] = view_create_label(26, 112, "Expand");
     function_context[3] = view_create_label(26, 128, "Derivative");
-    function_context[4] = view_create_label(26, 144, "Antiderivative"); /* NEW */
+    function_context[4] = view_create_label(26, 144, "Antiderivative");
     function_context[5] = view_create_label(26, 160, "Help");
 
     simplify_context[0] = view_create_checkbox(124, 80 + 12 * 0, "Basic identities", true);
@@ -512,8 +520,11 @@ void gui_Init() {
     derivative_context[0] = view_create_charselect(124 + 90, 80 - (16 - TEXT_HEIGHT) / 2);
     derivative_context[1] = button_derivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Differentiate");
 
+    /* === Antiderivative context: character picker, IBP checkbox, button === */
     antiderivative_context[0] = view_create_charselect(124 + 90, 80 - (16 - TEXT_HEIGHT) / 2);
-    antiderivative_context[1] = button_antiderivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Antideriv");
+    antideriv_ibp_checkbox    = view_create_checkbox(124, 80 + 12 * 1, "Use integration by parts (IBP)", false);
+    antiderivative_context[1] = antideriv_ibp_checkbox;
+    antiderivative_context[2] = button_antiderivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Antideriv");
 
     console_button = view_create_button(LCD_WIDTH / 2, LCD_HEIGHT - LCD_HEIGHT / 6 - 20, "Close");
 
@@ -521,6 +532,7 @@ void gui_Init() {
     active_index = 0;
     function_context[0]->active = true;
 }
+
 
 void gui_Cleanup() {
     unsigned i, j;
@@ -1015,102 +1027,6 @@ static uint8_t *rewrite_sqrt_to_pow_ascii_gui(const uint8_t *in, unsigned in_len
     *out_len = oi;
     return out;
 }
-
-void execute_antiderivative() {
-    char buffer[50];
-
-    pcas_ast_t *expression;
-    pcas_error_t err;
-
-    console_write("Parsing input...");
-
-    expression = parse_from_dropdown_index(from_drop->index, &err);
-
-    if (err == E_SUCCESS) {
-
-        if (expression != NULL) {
-            pcas_ast_t *respect_to;
-            char *theta = "theta";
-
-            /* We treat the @ character as theta (same convention as derivative panel) */
-            if (antiderivative_context[0]->character == '@') {
-                respect_to = parse((uint8_t*)theta, strlen(theta), str_table, &err);
-            } else {
-                respect_to = parse((uint8_t*)&antiderivative_context[0]->character, 1, str_table, &err);
-            }
-
-            if (!(err == E_SUCCESS && respect_to)) {
-                console_write("Failed to parse variable of integration.");
-                if (expression) ast_Cleanup(expression);
-                return;
-            }
-
-            /* --- normalize sqrt(...) -> (...)^(1/2) before integrating (GUI path) --- */
-            {
-                pcas_error_t e2 = E_SUCCESS;
-                unsigned ascii_len = 0, rew_len = 0;
-
-                /* export current AST to ASCII using str_table (ASCII-like) */
-                uint8_t *ascii = export_to_binary(expression, &ascii_len, str_table, &e2);
-                if (e2 == E_SUCCESS && ascii) {
-                    /* use the helper defined above in this file */
-                    uint8_t *rew = rewrite_sqrt_to_pow_ascii_gui(ascii, ascii_len, &rew_len);
-                    free(ascii);
-
-                    if (rew && rew_len) {
-                        ast_Cleanup(expression);
-                        expression = parse(rew, rew_len, str_table, &e2);
-                        free(rew);
-                        if (!(e2 == E_SUCCESS && expression)) {
-                            console_write("Internal parse error after sqrt->pow.");
-                            ast_Cleanup(respect_to);
-                            return;
-                        }
-                    }
-                }
-            }
-            /* ----------------------------------------------------------------------- */
-
-            console_write("Integrating...");
-
-            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL);
-
-            antiderivative(expression, respect_to);
-
-            /* keep it conservative so (2X)^(3/2) survives */
-            simplify(expression, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
-            simplify_canonical_form(expression, CANONICAL_ALL);
-
-            console_write("Exporting...");
-
-            write_to_dropdown_index(to_drop->index, expression, &err);
-
-            ast_Cleanup(expression);
-            ast_Cleanup(respect_to);
-
-            if (err == E_SUCCESS) {
-                console_write("Success.");
-            } else {
-                sprintf(buffer, "Failed. %s.", error_text[err]);
-                console_write(buffer);
-            }
-
-        } else {
-            console_write("Failed. Empty input.");
-        }
-
-    } else {
-        sprintf(buffer, "Failed. %s.", error_text[err]);
-        console_write(buffer);
-        if (from_drop->index == 20)
-            console_write("Make sure Ans is a string.");
-    }
-
-    console_button->active = true;
-    view_draw(console_button);
-}
-
-
 
 
 void execute_antiderivative() {
