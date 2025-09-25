@@ -1,456 +1,641 @@
-/*
- * integral.c
- *
- * A conservative antiderivative (indefinite integral) routine for PineappleCAS.
- * It walks the AST and applies a small set of safe rules (sum, constant
- * multiple, power rule, sin/cos, a^x). Expressions it cannot handle are
- * returned unchanged so you can layer advanced techniques later (IBP, trig
- * substitution, partial fractions, …).
+/* integral.c
+ * PineappleCAS — Antiderivative (indefinite integral) routines
+ * - ln/log support: unary OP_LOG(arg) = ln(arg); binary OP_LOG(base,arg) = log_base(arg)
+ * - Trig set via sin/cos/tan + quotient/power recognition (tan, sec, csc, cot; sec^2, csc^2; sec*tan, csc*cot)
+ * - Direct rule for ∫ sin x cos x dx = 1/2 sin^2 x and avoidance of IBP on pure trig×trig
+ * - Robust poly×(sin|cos) IBP with constants factored and bare x as degree 1
  */
 
 #include "integral.h"
-#include "cas.h"     /* for replace_node, simplify, eval_derivative_nodes */
+#include "cas.h"
 #include "identities.h"
 
-/* -------- IBP runtime toggle (default ON) -------- */
+/* Provided elsewhere */
+void replace_node(pcas_ast_t *dst, pcas_ast_t *src);
+
+/* ---------------- IBP controls ---------------- */
 static bool s_ibp_enabled = true;
 void integral_set_ibp_enabled(bool on) { s_ibp_enabled = on; }
 
-/* -------- IBP recursion guard --------
-   Depth 4 lets us do x^2 sin(x) (two IBP steps) and similar without hanging. */
-static int  s_ibp_depth      = 0;
-static const int s_ibp_max_depth = 4;
+/* Forward decls so helpers are known before use in expo_linear_coeff */
+static bool depends_on_var(pcas_ast_t *e, pcas_ast_t *var);
+static inline bool is_const_wrt(pcas_ast_t *e, pcas_ast_t *var);
 
-/* replace_node() is defined in simplify.c but not declared in a header. */
-void replace_node(pcas_ast_t *a, pcas_ast_t *b);
 
-/* true if `expr` does not depend on `var` */
-static bool is_constant_internal(pcas_ast_t *expr, pcas_ast_t *var) {
-    pcas_ast_t *child;
-    if (ast_Compare(expr, var)) return false;
-    if (expr->type == NODE_OPERATOR) {
-        for (child = ast_ChildGet(expr, 0); child != NULL; child = child->next) {
-            if (!is_constant_internal(child, var)) return false;
-        }
-    }
-    return true;
+static int s_ibp_depth = 0;
+static const int S_IBP_MAX_DEPTH = 8;
+
+/* ---------------- Helpers --------------------- */
+
+static inline pcas_ast_t *N(int v) { return ast_MakeNumber(num_FromInt(v)); }
+
+static void simp(pcas_ast_t *e) {
+    simplify(e, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE |
+                SIMP_EVAL | SIMP_LIKE_TERMS);
 }
 
-/* helper: does expression simplify to the exact number -1 ? */
-static bool simplifies_to_minus_one(pcas_ast_t *e) {
-    pcas_ast_t *tmp;
-    bool res = false;
+static bool depends_on_var(pcas_ast_t *e, pcas_ast_t *var) {
     if (!e) return false;
-    if (e->type == NODE_NUMBER) {
-        return mp_rat_compare_value(e->op.num, -1, 1) == 0;
+    if (e->type == NODE_SYMBOL) return ast_Compare(e, var);
+    if (e->type != NODE_OPERATOR) return false;
+    for (pcas_ast_t *ch = ast_ChildGet(e, 0); ch; ch = ch->next) {
+        if (depends_on_var(ch, var)) return true;
     }
-    tmp = ast_Copy(e);
-    simplify(tmp, SIMP_EVAL | SIMP_RATIONAL | SIMP_NORMALIZE | SIMP_COMMUTATIVE);
-    if (tmp->type == NODE_NUMBER && mp_rat_compare_value(tmp->op.num, -1, 1) == 0) {
-        res = true;
-    }
-    ast_Cleanup(tmp);
-    return res;
+    return false;
 }
 
-/* Heuristic: rank a node for being 'u' in IBP using LIATE priority.
-   Lower score = better 'u'. Non-constants only. */
-static int ibp_rank_u(pcas_ast_t *e) {
-    if (!e) return 1000;
-    if (e->type == NODE_NUMBER) return 999;
+/* Try to read expo as linear in `var`.
+   - var                => a = 1
+   - (num...)*var       => a = product of numeric factors
+   - var*(num... )      => same
+   - a*var + (numeric)  => same a (affine shift allowed)
+   Returns true and sets *a_out to a NUMBER node if successful. */
+static bool expo_linear_coeff(pcas_ast_t *expo, pcas_ast_t *var, pcas_ast_t **a_out) {
+    if (!expo || !var || !a_out) return false;
 
-    if (e->type == NODE_SYMBOL) return 30;
-    if (e->type == NODE_OPERATOR && optype(e) == OP_POW) {
-        pcas_ast_t *b = ast_ChildGet(e, 0);
-        pcas_ast_t *p = ast_ChildGet(e, 1);
-        if (b && b->type == NODE_SYMBOL && p && p->type == NODE_NUMBER) return 32;
+    /* direct: expo == var */
+    if (expo->type == NODE_SYMBOL && ast_Compare(expo, var)) {
+        *a_out = ast_MakeNumber(num_FromInt(1));
+        return true;
     }
 
-    if (e->type == NODE_OPERATOR && optype(e) == OP_LOG) {
-        pcas_ast_t *base = ast_ChildGet(e, 0);
-        if (base && base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER) return 10; /* L */
-        return 12;
+    /* product case: (num ...)*var (order-insensitive), ONLY numbers and var allowed */
+    if (expo->type == NODE_OPERATOR && optype(expo) == OP_MULT) {
+        mp_rat acc = num_FromInt(1);
+        bool saw_var = false;
+
+        for (pcas_ast_t *ch = ast_ChildGet(expo, 0); ch; ch = ch->next) {
+            if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) {
+                if (saw_var) { num_Cleanup(acc); return false; }  /* var must appear once */
+                saw_var = true;
+            } else if (ch->type == NODE_NUMBER) {
+                mp_rat_mul(acc, ch->op.num, acc);
+            } else {
+                /* some other non-numeric/non-var node => not linear */
+                num_Cleanup(acc);
+                return false;
+            }
+        }
+
+        if (saw_var) {
+            *a_out = ast_MakeNumber(num_Copy(acc));
+            num_Cleanup(acc);
+            return true;
+        }
+        num_Cleanup(acc);
+        return false;
     }
 
-    if (e->type == NODE_OPERATOR &&
-        (optype(e) == OP_SIN_INV || optype(e) == OP_COS_INV || optype(e) == OP_TAN_INV))
-        return 20; /* I */
+    /* sum (affine) case: a*var + b, where b is numeric-only (or absent) */
+    if (expo->type == NODE_OPERATOR && optype(expo) == OP_ADD) {
+        pcas_ast_t *term_with_var = NULL;
 
-    if (e->type == NODE_OPERATOR &&
-        (optype(e) == OP_ADD || optype(e) == OP_MULT || optype(e) == OP_DIV || optype(e) == OP_POW))
-        return 40; /* A */
+        /* Find exactly one addend containing var (as var or product of numbers*var) */
+        for (pcas_ast_t *t = ast_ChildGet(expo, 0); t; t = t->next) {
+            bool depends = depends_on_var(t, var);
+            if (depends) {
+                if (term_with_var) return false; /* more than one linear term => not strictly linear */
+                term_with_var = t;
+            } else {
+                /* require other addends to be numeric-only (constants) */
+                if (!is_const_wrt(t, var)) return false;
+            }
+        }
+        if (!term_with_var) return false;
 
-    if (e->type == NODE_OPERATOR &&
-        (optype(e) == OP_SIN || optype(e) == OP_COS || optype(e) == OP_TAN))
-        return 60; /* T */
+        /* Recurse: extract coefficient from the term-with-var (must be var or numbers*var) */
+        return expo_linear_coeff(term_with_var, var, a_out);
+    }
 
-    if (e->type == NODE_OPERATOR && optype(e) == OP_POW)
-        return 80; /* E (e^x is OP_POW with base e) */
-
-    return 50;
+    return false;
 }
 
-/* Split a product into two factors A*B (flattened). */
-static bool ibp_split_product_2(pcas_ast_t *prod, pcas_ast_t **a, pcas_ast_t **b) {
-    if (!prod || prod->type != NODE_OPERATOR || optype(prod) != OP_MULT) return false;
-    unsigned n = ast_ChildLength(prod);
-    if (n < 2) return false;
 
-    pcas_ast_t *left = ast_Copy(ast_ChildGet(prod, 0));
-    pcas_ast_t *right = NULL;
-    for (unsigned i = 1; i < n; ++i) {
-        if (!right) right = ast_Copy(ast_ChildGet(prod, i));
-        else right = ast_MakeBinary(OP_MULT, right, ast_Copy(ast_ChildGet(prod, i)));
-    }
-    *a = left;
-    *b = right ? right : ast_MakeNumber(num_FromInt(1));
-    return true;
+static inline bool is_const_wrt(pcas_ast_t *e, pcas_ast_t *var) {
+    return !depends_on_var(e, var);
 }
 
-/* d(expr)/d(var) */
-static pcas_ast_t *ibp_diff(pcas_ast_t *expr, pcas_ast_t *var) {
-    pcas_ast_t *d = ast_MakeUnary(OP_DERIV, ast_Copy(expr));
-    ast_ChildAppend(d, ast_Copy(var));
-    eval_derivative_nodes(d);
-    simplify(d, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE | SIMP_EVAL | SIMP_LIKE_TERMS);
-    return d;
+static inline bool is_var_deg1(pcas_ast_t *e, pcas_ast_t *var) {
+    return e && e->type == NODE_SYMBOL && ast_Compare(e, var);
 }
 
-/* Try our main integrator; return NULL if unsupported */
-static pcas_ast_t *ibp_anti_try(pcas_ast_t *e, pcas_ast_t *var);
+static bool is_one(pcas_ast_t *e) {
+    if (!e || e->type != NODE_NUMBER) return false;
+    return mp_rat_compare_value(e->op.num, 1, 1) == 0;
+}
 
-/* One-step generic IBP */
-static pcas_ast_t *ibp_try_once(pcas_ast_t *prod, pcas_ast_t *var) {
-    pcas_ast_t *A = NULL, *B = NULL;
-    if (!ibp_split_product_2(prod, &A, &B)) return NULL;
+static bool is_op(pcas_ast_t *e, OperatorType k) {
+    return e && e->type == NODE_OPERATOR && optype(e) == k;
+}
 
-    int rA = ibp_rank_u(A);
-    int rB = ibp_rank_u(B);
-    pcas_ast_t *u  = (rA <= rB) ? A : B;
-    pcas_ast_t *dv = (rA <= rB) ? B : A;
+/* Exact sin(var) or cos(var)? return child if matches */
+static pcas_ast_t *is_sin_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!is_op(e, OP_SIN)) return NULL;
+    pcas_ast_t *a = ast_ChildGet(e, 0);
+    return (a && a->type == NODE_SYMBOL && ast_Compare(a, var)) ? a : NULL;
+}
+static pcas_ast_t *is_cos_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!is_op(e, OP_COS)) return NULL;
+    pcas_ast_t *a = ast_ChildGet(e, 0);
+    return (a && a->type == NODE_SYMBOL && ast_Compare(a, var)) ? a : NULL;
+}
 
-    pcas_ast_t *du = ibp_diff(u, var);
-    pcas_ast_t *v  = ibp_anti_try(dv, var);
+/* Detect tan(x) with arg==var (assuming OP_TAN exists) */
+static bool is_tan_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!is_op(e, OP_TAN)) return false;
+    pcas_ast_t *a = ast_ChildGet(e, 0);
+    return a && a->type == NODE_SYMBOL && ast_Compare(a, var);
+}
 
-    if (!v) { /* try swapping */
-        ast_Cleanup(du);
-        du = ibp_diff(dv, var);
-        v  = ibp_anti_try(u, var);
-        if (!v) { ast_Cleanup(du); ast_Cleanup(A); ast_Cleanup(B); return NULL; }
-        pcas_ast_t *tmp = u; u = dv; dv = tmp;
+/* Recognize sec/csc/cot using only sin/cos/div/pow:
+   sec(x): 1/cos(x)  or  cos(x)^(-1)
+   csc(x): 1/sin(x)  or  sin(x)^(-1)
+   cot(x): cos(x)/sin(x)
+*/
+static bool is_sec_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e) return false;
+    if (is_op(e, OP_DIV)) {
+        pcas_ast_t *num = ast_ChildGet(e, 0), *den = ast_ChildGet(e, 1);
+        if (is_one(num) && is_cos_of_var(den, var)) return true;
     }
+    if (is_op(e, OP_POW)) {
+        pcas_ast_t *b = ast_ChildGet(e, 0), *p = ast_ChildGet(e, 1);
+        if (is_cos_of_var(b, var) && p && p->type == NODE_NUMBER &&
+            mp_rat_compare_value(p->op.num, -1, 1) == 0) return true;
+    }
+    return false;
+}
+static bool is_csc_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e) return false;
+    if (is_op(e, OP_DIV)) {
+        pcas_ast_t *num = ast_ChildGet(e, 0), *den = ast_ChildGet(e, 1);
+        if (is_one(num) && is_sin_of_var(den, var)) return true;
+    }
+    if (is_op(e, OP_POW)) {
+        pcas_ast_t *b = ast_ChildGet(e, 0), *p = ast_ChildGet(e, 1);
+        if (is_sin_of_var(b, var) && p && p->type == NODE_NUMBER &&
+            mp_rat_compare_value(p->op.num, -1, 1) == 0) return true;
+    }
+    return false;
+}
+static bool is_cot_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e || !is_op(e, OP_DIV)) return false;
+    pcas_ast_t *num = ast_ChildGet(e, 0), *den = ast_ChildGet(e, 1);
+    return is_cos_of_var(num, var) && is_sin_of_var(den, var);
+}
 
-    pcas_ast_t *uv   = ast_MakeBinary(OP_MULT, ast_Copy(u), ast_Copy(v));
-    pcas_ast_t *vdu  = ast_MakeBinary(OP_MULT, ast_Copy(v), du);
-
-    /* CRITICAL: simplify before recursing so the next IBP triggers cleanly */
-    simplify(vdu, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
-
-    pcas_ast_t *res = NULL;
-    if (s_ibp_depth < s_ibp_max_depth) {
-        s_ibp_depth++;
-        pcas_ast_t *rest = ibp_anti_try(vdu, var);
-        s_ibp_depth--;
-        if (rest) {
-            res = ast_MakeBinary(OP_ADD, uv,
-                    ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), rest));
-            simplify(res, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE | SIMP_EVAL | SIMP_LIKE_TERMS);
-        } else {
-            ast_Cleanup(uv);
+/* sec^2 / csc^2 via cos/sin powers or reciprocals */
+static bool is_sec2_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e) return false;
+    if (is_op(e, OP_POW)) {
+        pcas_ast_t *b = ast_ChildGet(e, 0), *p = ast_ChildGet(e, 1);
+        if (is_cos_of_var(b, var) && p && p->type == NODE_NUMBER &&
+            mp_rat_compare_value(p->op.num, -2, 1) == 0) return true;
+    }
+    if (is_op(e, OP_DIV)) {
+        pcas_ast_t *num = ast_ChildGet(e, 0), *den = ast_ChildGet(e, 1);
+        if (is_one(num) && is_op(den, OP_POW)) {
+            pcas_ast_t *db = ast_ChildGet(den, 0), *dp = ast_ChildGet(den,1);
+            if (is_cos_of_var(db, var) && dp && dp->type==NODE_NUMBER &&
+                mp_rat_compare_value(dp->op.num, 2, 1) == 0) return true;
         }
     }
-    ast_Cleanup(A);
-    ast_Cleanup(B);
-    if (v) ast_Cleanup(v);
+    return false;
+}
+static bool is_csc2_of_var(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e) return false;
+    if (is_op(e, OP_POW)) {
+        pcas_ast_t *b = ast_ChildGet(e, 0), *p = ast_ChildGet(e, 1);
+        if (is_sin_of_var(b, var) && p && p->type == NODE_NUMBER &&
+            mp_rat_compare_value(p->op.num, -2, 1) == 0) return true;
+    }
+    if (is_op(e, OP_DIV)) {
+        pcas_ast_t *num = ast_ChildGet(e, 0), *den = ast_ChildGet(e, 1);
+        if (is_one(num) && is_op(den, OP_POW)) {
+            pcas_ast_t *db = ast_ChildGet(den, 0), *dp = ast_ChildGet(den,1);
+            if (is_sin_of_var(db, var) && dp && dp->type==NODE_NUMBER &&
+                mp_rat_compare_value(dp->op.num, 2, 1) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/* Elementary trig antiderivatives (arg expected to be var) */
+static pcas_ast_t *int_sin_of(pcas_ast_t *arg) { /* ∫ sin(x) dx = -cos(x) */
+    return ast_MakeBinary(OP_MULT, N(-1), ast_MakeUnary(OP_COS, arg));
+}
+static pcas_ast_t *int_cos_of(pcas_ast_t *arg) { /* ∫ cos(x) dx =  sin(x) */
+    return ast_MakeUnary(OP_SIN, arg);
+}
+
+/* Return 1 if node is unary natural log ln(arg) with arg==var.
+   Return 2 if node is binary log_base(arg) with arg==var and set *base_out=base.
+   Return 0 otherwise.
+   NOTE: repo convention is child0=base, child1=arg for binary LOG; unary has child0=arg, child1=NULL. */
+static int match_log_of_var(pcas_ast_t *e, pcas_ast_t *var, pcas_ast_t **base_out) {
+    if (!e || e->type != NODE_OPERATOR || optype(e) != OP_LOG) return 0;
+
+    pcas_ast_t *c0 = ast_ChildGet(e, 0);
+    pcas_ast_t *c1 = ast_ChildGet(e, 1);
+
+    if (c1 == NULL) {
+        /* unary: LOG(arg) -> ln(arg) */
+        pcas_ast_t *arg = c0;
+        if (arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
+            if (base_out) *base_out = NULL;
+            return 1;
+        }
+        return 0;
+    } else {
+        /* binary: LOG(base, arg) */
+        pcas_ast_t *base = c0;
+        pcas_ast_t *arg  = c1;
+        if (arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
+            if (base_out) *base_out = base;
+            return 2;
+        }
+        return 0;
+    }
+}
+
+/* ∫ ln(x) dx = x ln(x) - x */
+static pcas_ast_t *int_ln_of_x(pcas_ast_t *var) {
+    pcas_ast_t *lnx  = ast_MakeUnary(OP_LOG, ast_Copy(var));        /* ln(x) */
+    pcas_ast_t *xlnx = ast_MakeBinary(OP_MULT, ast_Copy(var), lnx); /* x*ln(x) */
+    pcas_ast_t *res  = ast_MakeBinary(OP_ADD, xlnx,
+                         ast_MakeBinary(OP_MULT, N(-1), ast_Copy(var)));
+    simp(res);
     return res;
 }
 
-/* Forward decl */
+/* Forward decl of the integrator core. */
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var);
 
-/* Anti-try helper: just call; non-NULL means “we did something” */
-static pcas_ast_t *ibp_anti_try(pcas_ast_t *e, pcas_ast_t *var) {
-    return integrate_node(e, var);
+/* ---------------- Targeted IBP: poly(x) * (sin|cos)(x) ---------------- */
+static pcas_ast_t *ibp_poly_trig_once(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    pcas_ast_t *poly = NULL, *poly_pow = NULL, *trig = NULL;
+    pcas_ast_t *const_factor = N(1);
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        bool picked = false;
+
+        if (!poly && is_op(ch, OP_POW)) {
+            pcas_ast_t *base = ast_ChildGet(ch, 0);
+            pcas_ast_t *expo = ast_ChildGet(ch, 1);
+            if (base && expo && base->type == NODE_SYMBOL &&
+                ast_Compare(base, var) && expo->type == NODE_NUMBER) {
+                poly = ch; poly_pow = expo; picked = true;
+            }
+        }
+        if (!picked && !poly && is_var_deg1(ch, var)) {
+            poly = ch; poly_pow = NULL; picked = true;
+        }
+
+        if (!picked && !trig && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) {
+            pcas_ast_t *arg = ast_ChildGet(ch, 0);
+            if (arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
+                trig = ch; picked = true;
+            }
+        }
+
+        if (!picked) {
+            if (!is_const_wrt(ch, var)) { ast_Cleanup(const_factor); return NULL; }
+            const_factor = ast_MakeBinary(OP_MULT, const_factor, ast_Copy(ch));
+        }
+    }
+
+    if (!poly || !trig) { ast_Cleanup(const_factor); return NULL; }
+
+    int n = 1;
+    if (poly_pow) {
+        char *nstr = num_ToString(poly_pow->op.num, 24);
+        n = (int)strtol(nstr, NULL, 10);
+        free(nstr);
+        if (n < 1) { ast_Cleanup(const_factor); return NULL; }
+    }
+
+    pcas_ast_t *u = ast_Copy(poly);
+    pcas_ast_t *v = is_op(trig, OP_SIN)
+                    ? int_sin_of(ast_Copy(ast_ChildGet(trig, 0)))
+                    : int_cos_of(ast_Copy(ast_ChildGet(trig, 0)));
+
+    pcas_ast_t *du = (n == 1) ? N(1)
+                              : ast_MakeBinary(OP_MULT, N(n),
+                                  ast_MakeBinary(OP_POW, ast_Copy(var), N(n-1)) );
+
+    pcas_ast_t *uv  = ast_MakeBinary(OP_MULT, ast_Copy(const_factor),
+                                     ast_MakeBinary(OP_MULT, u, ast_Copy(v)));
+    pcas_ast_t *vdu = ast_MakeBinary(OP_MULT, v, du);
+
+    if (s_ibp_depth >= S_IBP_MAX_DEPTH) {
+        simp(uv); ast_Cleanup(vdu); ast_Cleanup(const_factor); return uv;
+    }
+
+    s_ibp_depth++;
+    pcas_ast_t *rest = integrate_node(ast_MakeBinary(OP_MULT, ast_Copy(const_factor), vdu), var);
+    s_ibp_depth--;
+
+    ast_Cleanup(const_factor);
+
+    if (!rest) { ast_Cleanup(uv); return NULL; }
+
+    pcas_ast_t *res = ast_MakeBinary(OP_ADD, uv, ast_MakeBinary(OP_MULT, N(-1), rest));
+    simp(res);
+    return res;
 }
 
-/* ---------- main integrator ---------- */
+/* ---------------- Special trig handling ---------------- */
+
+/* EXACT product sin(x)*cos(x) (same var) → 1/2 sin^2 x */
+static pcas_ast_t *integrate_sin_cos_simple(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+    pcas_ast_t *a = ast_ChildGet(expr, 0), *b = ast_ChildGet(expr, 1);
+    if (!a || !b || a->next) return NULL; /* only two factors */
+    if ((is_sin_of_var(a,var) && is_cos_of_var(b,var)) ||
+        (is_sin_of_var(b,var) && is_cos_of_var(a,var))) {
+        pcas_ast_t *s  = ast_MakeUnary(OP_SIN, ast_Copy(var));
+        pcas_ast_t *s2 = ast_MakeBinary(OP_POW, s, N(2));
+        pcas_ast_t *res = ast_MakeBinary(OP_DIV, s2, N(2)); /* 1/2 * sin^2(x) */
+        simp(res);
+        return res;
+    }
+    return NULL;
+}
+
+/* sec*tan and csc*cot in quotient form */
+static bool is_sec_times_tan(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e || !is_op(e, OP_MULT)) return false;
+    pcas_ast_t *a = ast_ChildGet(e,0), *b = ast_ChildGet(e,1);
+    return (is_sec_of_var(a,var) && is_tan_of_var(b,var)) ||
+           (is_sec_of_var(b,var) && is_tan_of_var(a,var));
+}
+static bool is_csc_times_cot(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e || !is_op(e, OP_MULT)) return false;
+    pcas_ast_t *a = ast_ChildGet(e,0), *b = ast_ChildGet(e,1);
+    return (is_csc_of_var(a,var) && is_cot_of_var(b,var)) ||
+           (is_csc_of_var(b,var) && is_cot_of_var(a,var));
+}
+static pcas_ast_t *integrate_special_trig_product(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* sin·cos first to avoid recursion crashes */
+    pcas_ast_t *sc = integrate_sin_cos_simple(expr, var);
+    if (sc) return sc;
+
+    if (is_sec_times_tan(expr, var)) {
+        pcas_ast_t *res = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_COS, ast_Copy(var))); /* sec */
+        simp(res);
+        return res;
+    }
+    if (is_csc_times_cot(expr, var)) {
+        pcas_ast_t *csc = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_SIN, ast_Copy(var)));
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, N(-1), csc); /* -csc */
+        simp(res);
+        return res;
+    }
+    return NULL;
+}
+
+/* ---------------- Pieces for common node types --------------------------- */
+
+static pcas_ast_t *integrate_sum(pcas_ast_t *expr, pcas_ast_t *var) {
+    pcas_ast_t *sum = ast_MakeOperator(OP_ADD);
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        pcas_ast_t *i = integrate_node(ast_Copy(ch), var);
+        if (!i) { ast_Cleanup(sum); return NULL; }
+        ast_ChildAppend(sum, i);
+    }
+    simp(sum);
+    return sum;
+}
+static pcas_ast_t *integrate_power(pcas_ast_t *expr, pcas_ast_t *var) {
+    pcas_ast_t *base = ast_ChildGet(expr, 0);
+    pcas_ast_t *expo = ast_ChildGet(expr, 1);
+    if (!base || !expo) return NULL;
+
+    /* --- e^(a*x [+ b]) : ∫ e^(a x) dx = (1/a) e^(a x) --- */
+    if (base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER) {
+        pcas_ast_t *a_num = NULL;
+        if (expo_linear_coeff(expo, var, &a_num)) {
+            /* a_num is number (which may be negative) */
+            /* Build coefficient c = 1 / a_num (will be negative if a_num negative) */
+            mp_rat c = num_FromInt(1);
+            mp_rat_div(c, a_num->op.num, c);
+
+            pcas_ast_t *coef = ast_MakeNumber(c);
+            pcas_ast_t *pow  = ast_MakeBinary(OP_POW, ast_Copy(base), ast_Copy(expo));
+            pcas_ast_t *res  = ast_MakeBinary(OP_MULT, coef, pow);
+
+            ast_Cleanup(a_num);
+            simp(res);
+            return res;
+        }
+    }
+
+    /* fallback: original power-handling (x^n, sec², csc² etc) */
+    if (expo->type == NODE_NUMBER && base->type == NODE_SYMBOL && ast_Compare(base, var)) {
+        char *nstr = num_ToString(expo->op.num, 24);
+        long n = strtol(nstr, NULL, 10);
+        free(nstr);
+        if (n == -1) return NULL;
+        pcas_ast_t *res = ast_MakeBinary(
+            OP_DIV,
+            ast_MakeBinary(OP_POW, ast_Copy(var), N((int)(n + 1))),
+            N((int)(n + 1))
+        );
+        simp(res);
+        return res;
+    }
+    if (is_sec2_of_var(expr, var)) {
+        pcas_ast_t *res = ast_MakeUnary(OP_TAN, ast_Copy(var));
+        simp(res);
+        return res;
+    }
+    if (is_csc2_of_var(expr, var)) {
+        pcas_ast_t *cot = ast_MakeBinary(OP_DIV, ast_MakeUnary(OP_COS, ast_Copy(var)),
+                                         ast_MakeUnary(OP_SIN, ast_Copy(var)));
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, N(-1), cot);
+        simp(res);
+        return res;
+    }
+
+    return NULL;
+}
+
+
+static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
+    /* Short-circuit common trig×trig to avoid recursion crashes */
+    pcas_ast_t *sp = integrate_special_trig_product(expr, var);
+    if (sp) return sp;
+
+    /* Targeted poly×(sin|cos) IBP */
+    if (s_ibp_enabled) {
+        pcas_ast_t *t = ibp_poly_trig_once(expr, var);
+        if (t) return t;
+    }
+
+    /* If remaining non-constant factors are all trig and >1, skip (avoid loops) */
+    int nonconst_count = 0, trig_like_count = 0;
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (!is_const_wrt(ch, var)) {
+            nonconst_count++;
+            if (is_op(ch, OP_SIN) || is_op(ch, OP_COS) || is_tan_of_var(ch,var) ||
+                is_sec_of_var(ch,var) || is_csc_of_var(ch,var) || is_cot_of_var(ch,var)) {
+                trig_like_count++;
+            }
+        }
+    }
+    if (nonconst_count >= 2 && trig_like_count == nonconst_count) {
+        return NULL; /* let higher-level trig identities handle */
+    }
+
+    /* Constant factor extraction (c * f(x) -> c * ∫ f(x) dx) */
+    pcas_ast_t *const_factor = N(1);
+    pcas_ast_t *rest_factor  = N(1);
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        if (is_const_wrt(ch, var)) {
+            const_factor = ast_MakeBinary(OP_MULT, const_factor, ast_Copy(ch));
+        } else {
+            rest_factor  = ast_MakeBinary(OP_MULT, rest_factor,  ast_Copy(ch));
+        }
+    }
+    simp(const_factor); simp(rest_factor);
+
+    if (is_one(rest_factor)) {
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, const_factor, ast_Copy(var));
+        simp(res);
+        ast_Cleanup(rest_factor);
+        return res;
+    }
+
+    pcas_ast_t *inner = integrate_node(rest_factor, var);
+    if (inner) {
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, const_factor, inner);
+        simp(res);
+        return res;
+    }
+
+    ast_Cleanup(const_factor);
+    return NULL;
+}
+
+/* ---------------- Main integrator ---------------- */
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
-    /* constants */
-    if (is_constant_internal(expr, var)) {
-        return ast_MakeBinary(OP_MULT, ast_Copy(expr), ast_Copy(var));
+    if (!expr) return NULL;
+
+    /* Numbers: ∫ c dx = c*x */
+    if (expr->type == NODE_NUMBER) {
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, ast_Copy(expr), ast_Copy(var));
+        simp(res);
+        return res;
     }
 
-    /* ∫ x dx */
-    if (expr->type == NODE_SYMBOL && var->type == NODE_SYMBOL &&
-        expr->op.symbol == var->op.symbol) {
-        pcas_ast_t *pow2 = ast_MakeBinary(OP_POW, ast_Copy(expr), ast_MakeNumber(num_FromInt(2)));
-        return ast_MakeBinary(OP_DIV, pow2, ast_MakeNumber(num_FromInt(2)));
-    }
-
-    if (expr->type == NODE_OPERATOR) {
-        OperatorType op = optype(expr);
-
-        /* Sum rule */
-        if (op == OP_ADD) {
-            pcas_ast_t *sum = ast_MakeOperator(OP_ADD);
-            for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch != NULL; ch = ch->next) {
-                pcas_ast_t *part = integrate_node(ch, var);
-                if (!part) { ast_Cleanup(sum); return NULL; }
-                ast_ChildAppend(sum, part);
-            }
-            return sum;
-        }
-
-        /* LOGS */
-        if (op == OP_LOG) {
-            pcas_ast_t *base = ast_ChildGet(expr, 0);
-            pcas_ast_t *arg  = ast_ChildGet(expr, 1);
-
-            /* ln(x) -> x ln x - x */
-            if (base && base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER &&
-                arg && ast_Compare(arg, var)) {
-                pcas_ast_t *lnx  = ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(var));
-                pcas_ast_t *xlnx = ast_MakeBinary(OP_MULT, ast_Copy(var), lnx);
-                return ast_MakeBinary(OP_ADD, xlnx,
-                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), ast_Copy(var)));
-            }
-
-            /* log_b(x) -> (x ln x - x) / ln b */
-            if (arg && ast_Compare(arg, var) && base && is_constant_internal(base, var)) {
-                pcas_ast_t *lnx  = ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(var));
-                pcas_ast_t *xlnx = ast_MakeBinary(OP_MULT, ast_Copy(var), lnx);
-                pcas_ast_t *num  = ast_MakeBinary(OP_ADD, xlnx,
-                                   ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), ast_Copy(var)));
-                pcas_ast_t *lnb  = ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(base));
-                return ast_MakeBinary(OP_DIV, num, lnb);
-            }
-        }
-
-        /* ---------- Targeted: polynomial * trig (guaranteed IBP) ---------- */
-        if (op == OP_MULT && s_ibp_enabled && s_ibp_depth < s_ibp_max_depth) {
-            pcas_ast_t *poly = NULL, *trig = NULL, *other = NULL;
-            unsigned nchild = ast_ChildLength(expr);
-
-            for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
-                if (!poly && ch->type == NODE_OPERATOR && optype(ch) == OP_POW) {
-                    pcas_ast_t *b = ast_ChildGet(ch, 0);
-                    pcas_ast_t *p = ast_ChildGet(ch, 1);
-                    if (b && ast_Compare(b, var) && p && p->type == NODE_NUMBER &&
-                        mp_rat_compare_value(p->op.num, 1, 1) >= 0) {
-                        poly = ch; continue;
-                    }
-                }
-                if (!trig && ch->type == NODE_OPERATOR &&
-                    (optype(ch) == OP_SIN || optype(ch) == OP_COS)) {
-                    pcas_ast_t *a = ast_ChildGet(ch, 0);
-                    if (a && ast_Compare(a, var)) { trig = ch; continue; }
-                }
-                other = ch;
-            }
-
-            if (poly && trig && (!other || is_constant_internal(other, var))) {
-                pcas_ast_t *u  = ast_Copy(poly);
-                pcas_ast_t *dv = ast_Copy(trig);
-
-                pcas_ast_t *v = NULL;
-                if (optype(trig) == OP_SIN) {
-                    v = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)),
-                        ast_MakeUnary(OP_COS, ast_Copy(var)));
-                } else {
-                    v = ast_MakeUnary(OP_SIN, ast_Copy(var));
-                }
-
-                pcas_ast_t *du = ibp_diff(u, var);
-
-                /* include any constant factor in v */
-                if (nchild > 2) {
-                    pcas_ast_t *const_k = NULL;
-                    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
-                        if (ch != poly && ch != trig && is_constant_internal(ch, var)) {
-                            const_k = const_k ? ast_MakeBinary(OP_MULT, const_k, ast_Copy(ch))
-                                              : ast_Copy(ch);
-                        }
-                    }
-                    if (const_k) v = ast_MakeBinary(OP_MULT, const_k, v);
-                }
-
-                pcas_ast_t *uv  = ast_MakeBinary(OP_MULT, ast_Copy(u), ast_Copy(v));
-                pcas_ast_t *vdu = ast_MakeBinary(OP_MULT, ast_Copy(v), du);
-
-                /* CRITICAL: simplify v*du before recursing */
-                simplify(vdu, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
-
-                pcas_ast_t *res = NULL;
-                if (s_ibp_depth < s_ibp_max_depth) {
-                    s_ibp_depth++;
-                    pcas_ast_t *rest = integrate_node(vdu, var);
-                    s_ibp_depth--;
-                    if (rest) {
-                        res = ast_MakeBinary(OP_ADD, uv,
-                              ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), rest));
-                        simplify(res, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE | SIMP_EVAL | SIMP_LIKE_TERMS);
-                        ast_Cleanup(v);
-                        ast_Cleanup(u);
-                        return res;
-                    }
-                }
-                ast_Cleanup(uv);
-                ast_Cleanup(v);
-                ast_Cleanup(u);
-                return NULL;
-            }
-        }
-
-        /* Product: constant multiple rule first; then generic IBP at end */
-        if (op == OP_MULT) {
-            pcas_ast_t *const_factor = NULL;
-            pcas_ast_t *nonconst_prod = NULL;
-
-            for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch != NULL; ch = ch->next) {
-                if (is_constant_internal(ch, var)) {
-                    const_factor = const_factor
-                        ? ast_MakeBinary(OP_MULT, const_factor, ast_Copy(ch))
-                        : ast_Copy(ch);
-                } else {
-                    nonconst_prod = nonconst_prod
-                        ? ast_MakeBinary(OP_MULT, nonconst_prod, ast_Copy(ch))
-                        : ast_Copy(ch);
-                }
-            }
-
-            if (nonconst_prod && const_factor) {
-                pcas_ast_t *inside = integrate_node(nonconst_prod, var);
-                if (!inside) { ast_Cleanup(const_factor); return NULL; }
-                return ast_MakeBinary(OP_MULT, const_factor, inside);
-            }
-        }
-
-        /* Powers & exponentials */
-        if (op == OP_POW) {
-            pcas_ast_t *base = ast_ChildGet(expr, 0);
-            pcas_ast_t *expo = ast_ChildGet(expr, 1);
-
-            /* (c*v)^n with exactly one variable factor v and constant n */
-            if (base && base->type == NODE_OPERATOR && optype(base) == OP_MULT &&
-                expo && is_constant_internal(expo, var)) {
-
-                pcas_ast_t *ch, *const_prod = NULL, *var_factor = NULL;
-                int var_count = 0;
-
-                for (ch = ast_ChildGet(base, 0); ch != NULL; ch = ch->next) {
-                    if (is_constant_internal(ch, var)) {
-                        const_prod = const_prod
-                            ? ast_MakeBinary(OP_MULT, const_prod, ast_Copy(ch))
-                            : ast_Copy(ch);
-                    } else {
-                        var_count++;
-                        var_factor = var_factor
-                            ? ast_MakeBinary(OP_MULT, var_factor, ast_Copy(ch))
-                            : ast_Copy(ch);
-                    }
-                }
-
-                if (var_count == 1 && var_factor) {
-                    pcas_ast_t *c_pow_n = const_prod
-                        ? ast_MakeBinary(OP_POW, const_prod, ast_Copy(expo))
-                        : ast_MakeNumber(num_FromInt(1));
-
-                    if (simplifies_to_minus_one(expo)) {
-                        pcas_ast_t *ln_v = ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(var_factor));
-                        return ast_MakeBinary(OP_MULT, c_pow_n, ln_v);
-                    } else {
-                        pcas_ast_t *one = ast_MakeNumber(num_FromInt(1));
-                        pcas_ast_t *n_plus_1 = ast_MakeBinary(OP_ADD, ast_Copy(expo), one);
-                        pcas_ast_t *v_pow = ast_MakeBinary(OP_POW, ast_Copy(var_factor), ast_Copy(n_plus_1));
-                        pcas_ast_t *num = ast_MakeBinary(OP_MULT, c_pow_n, v_pow);
-                        return ast_MakeBinary(OP_DIV, num, n_plus_1);
-                    }
-                }
-            }
-
-            /* x^n (n constant) */
-            if (base && expo &&
-                ast_Compare(base, var) && is_constant_internal(expo, var)) {
-
-                if (simplifies_to_minus_one(expo)) {
-                    return ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(base));
-                } else {
-                    pcas_ast_t *one = ast_MakeNumber(num_FromInt(1));
-                    pcas_ast_t *n1  = ast_MakeBinary(OP_ADD, ast_Copy(expo), one);
-                    pcas_ast_t *pow = ast_MakeBinary(OP_POW, ast_Copy(base), ast_Copy(n1));
-                    return ast_MakeBinary(OP_DIV, pow, n1);
-                }
-            }
-
-            /* a^x where a is constant */
-            if (base && expo && is_constant_internal(base, var) && ast_Compare(expo, var)) {
-                pcas_ast_t *ln_a = ast_MakeBinary(OP_LOG, ast_MakeSymbol(SYM_EULER), ast_Copy(base));
-                return ast_MakeBinary(OP_DIV, ast_Copy(expr), ln_a);
-            }
-
-            /* cos^2 / sin^2 */
-            if (expo && expo->type == NODE_NUMBER && mp_rat_compare_value(expo->op.num, 2, 1) == 0) {
-                if (base && base->type == NODE_OPERATOR) {
-                    OperatorType bop = optype(base);
-                    pcas_ast_t *arg = ast_ChildGet(base, 0);
-                    if (arg && ast_Compare(arg, var)) {
-                        if (bop == OP_COS) {
-                            pcas_ast_t *x_over_2 =
-                                ast_MakeBinary(OP_DIV, ast_Copy(var), ast_MakeNumber(num_FromInt(2)));
-                            pcas_ast_t *two_x = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(2)), ast_Copy(var));
-                            pcas_ast_t *sin2x = ast_MakeUnary(OP_SIN, two_x);
-                            pcas_ast_t *sin_term =
-                                ast_MakeBinary(OP_DIV, sin2x, ast_MakeNumber(num_FromInt(4)));
-                            return ast_MakeBinary(OP_ADD, x_over_2, sin_term);
-                        } else if (bop == OP_SIN) {
-                            pcas_ast_t *x_over_2 =
-                                ast_MakeBinary(OP_DIV, ast_Copy(var), ast_MakeNumber(num_FromInt(2)));
-                            pcas_ast_t *two_x = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(2)), ast_Copy(var));
-                            pcas_ast_t *sin2x = ast_MakeUnary(OP_SIN, two_x);
-                            pcas_ast_t *sin_term =
-                                ast_MakeBinary(OP_DIV, sin2x, ast_MakeNumber(num_FromInt(4)));
-                            pcas_ast_t *neg_sin = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), sin_term);
-                            return ast_MakeBinary(OP_ADD, x_over_2, neg_sin);
-                        }
-                    }
-                }
-            }
-        }
-
-        /* Trig basics */
-        if (op == OP_SIN) {
-            pcas_ast_t *arg = ast_ChildGet(expr, 0);
-            if (arg && ast_Compare(arg, var)) {
-                pcas_ast_t *cosx = ast_MakeUnary(OP_COS, ast_Copy(arg));
-                return ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), cosx);
-            }
-        }
-        if (op == OP_COS) {
-            pcas_ast_t *arg2 = ast_ChildGet(expr, 0);
-            if (arg2 && ast_Compare(arg2, var)) {
-                return ast_MakeUnary(OP_SIN, ast_Copy(arg2));
-            }
-        }
-
-        /* LAST: generic IBP */
-        if (s_ibp_enabled && op == OP_MULT && s_ibp_depth < s_ibp_max_depth) {
-            pcas_ast_t *by_parts = ibp_try_once(expr, var);
-            if (by_parts) return by_parts;
+    /* Symbols */
+    if (expr->type == NODE_SYMBOL) {
+        if (ast_Compare(expr, var)) {
+            pcas_ast_t *res = ast_MakeBinary(OP_DIV,
+                ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(2));
+            simp(res);
+            return res;
+        } else {
+            pcas_ast_t *res = ast_MakeBinary(OP_MULT, ast_Copy(expr), ast_Copy(var));
+            simp(res);
+            return res;
         }
     }
 
-    return NULL; /* unsupported */
+    if (expr->type != NODE_OPERATOR) return NULL;
+
+    OperatorType op = optype(expr);
+
+    if (op == OP_ADD)  {
+        return integrate_sum(expr, var);
+    }
+    if (op == OP_MULT) {
+        return integrate_product(expr, var);
+    }
+    if (op == OP_POW)  {
+        pcas_ast_t *r = integrate_power(expr, var);
+        if (r) return r;
+    }
+
+    /* Trig singletons with arg==var */
+    if (op == OP_SIN || op == OP_COS || op == OP_TAN) {
+        pcas_ast_t *arg = ast_ChildGet(expr, 0);
+        if (arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
+            pcas_ast_t *res = NULL;
+            switch (op) {
+                case OP_SIN: res = int_sin_of(ast_Copy(arg)); break;  /* -cos x */
+                case OP_COS: res = int_cos_of(ast_Copy(arg)); break;  /*  sin x */
+                case OP_TAN:
+                    /* ∫ tan x dx = -ln|cos x|  (represent as -ln(cos x)) */
+                    res = ast_MakeBinary(OP_MULT, N(-1),
+                          ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(arg))));
+                    break;
+                default: break;
+            }
+            if (res) { simp(res); return res; }
+        }
+    }
+
+    /* ln/log of the variable x (unary ln or base-log) */
+    {
+        pcas_ast_t *base = NULL;
+        int kind = match_log_of_var(expr, var, &base);
+        if (kind == 1) {
+            /* unary ln(x) */
+            return int_ln_of_x(var);
+        } else if (kind == 2) {
+            /* If base == e, it's ln(x): avoid dividing by ln(e) */
+            if (base && base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER) {
+                return int_ln_of_x(var);
+            }
+            /* General base: (x ln x - x) / ln(a) */
+            pcas_ast_t *numer = int_ln_of_x(var);
+            pcas_ast_t *den   = ast_MakeUnary(OP_LOG, ast_Copy(base)); /* ln(a) */
+            pcas_ast_t *res   = ast_MakeBinary(OP_DIV, numer, den);
+            simp(res);
+            return res;
+        }
+    }
+
+    /* sec, csc, cot singletons by pattern */
+    if (is_sec_of_var(expr, var)) {
+        /* ∫ sec x dx = ln(sec x + tan x) */
+        pcas_ast_t *sec = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_COS, ast_Copy(var)));
+        pcas_ast_t *tan = ast_MakeUnary(OP_TAN, ast_Copy(var));
+        pcas_ast_t *sum = ast_MakeBinary(OP_ADD, sec, tan);
+        pcas_ast_t *res = ast_MakeUnary(OP_LOG, sum);
+        simp(res);
+        return res;
+    }
+    if (is_csc_of_var(expr, var)) {
+        /* ∫ csc x dx = ln(csc x - cot x) = ln( 1/sin - cos/sin ) */
+        pcas_ast_t *csc = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_SIN, ast_Copy(var)));
+        pcas_ast_t *cot = ast_MakeBinary(OP_DIV, ast_MakeUnary(OP_COS, ast_Copy(var)),
+                                         ast_MakeUnary(OP_SIN, ast_Copy(var)));
+        pcas_ast_t *diff = ast_MakeBinary(OP_ADD, csc, ast_MakeBinary(OP_MULT, N(-1), cot));
+        pcas_ast_t *res  = ast_MakeUnary(OP_LOG, diff);
+        simp(res);
+        return res;
+    }
+    if (is_cot_of_var(expr, var)) {
+        /* ∫ cot x dx = ln|sin x| (build ln(sin x)) */
+        pcas_ast_t *res = ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_SIN, ast_Copy(var)));
+        simp(res);
+        return res;
+    }
+
+    return NULL;
 }
 
-/* Public API: replace `e` with its antiderivative (in place) */
+/* Public entry */
 void antiderivative(pcas_ast_t *e, pcas_ast_t *respect_to) {
     if (!e || !respect_to) return;
-
-    pcas_ast_t *res = integrate_node(e, respect_to);
-    if (!res) {
-        /* fallback: keep original */
-        return;
-    }
+    pcas_ast_t *copy = ast_Copy(e);
+    pcas_ast_t *res  = integrate_node(copy, respect_to);
+    if (!res) { ast_Cleanup(copy); return; }
     replace_node(e, res);
-    simplify(e, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE | SIMP_EVAL | SIMP_LIKE_TERMS);
 }

@@ -167,7 +167,6 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
 
                 if(needs_mult && !isoptype(next, OP_ROOT))
                     add_token(TOK_MULTIPLY);
-
             }
 
             child = ast_ChildGetLast(e);
@@ -181,6 +180,7 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
 
             break;
         }
+
         case OP_DIV: {
             /* emit a true fraction: numerator / denominator */
             pcas_ast_t *num = ast_ChildGet(e, 0);
@@ -197,6 +197,7 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
             if (need_paren(e, den)) add_token(TOK_CLOSE_PAR);
             break;
         }
+
 
         case OP_POW: {
             pcas_ast_t *base = ast_ChildGet(e, 0);
@@ -249,32 +250,52 @@ static unsigned _to_binary(pcas_ast_t *e, uint8_t *data, unsigned index, struct 
 
             break;
         }
+
         case OP_LOG: {
-            pcas_ast_t *a, *b;
+            /* Support both unary ln(arg) and binary log_base(arg).
+               Our AST uses:
+                 - unary:  child0 = arg,        child1 = NULL
+                 - binary: child0 = base,       child1 = arg
+            */
+            pcas_ast_t *c0 = ast_ChildGet(e, 0);
+            pcas_ast_t *c1 = ast_ChildGet(e, 1);
 
-            a = ast_ChildGet(e, 0);
-            b = ast_ChildGet(e, 1);
+            /* UNARY natural log: ln(c0) */
+            if (c1 == NULL) {
+                add_token(TOK_LN);                              /* emits "ln(" */
+                index = _to_binary(c0, data, index, lookup, err);
+                add_token(TOK_CLOSE_PAR);                       /* emits ")"   */
+                break;
+            }
 
-            if(a->type == NODE_SYMBOL && a->op.symbol == SYM_EULER) {
+            /* BINARY base log: log_base(c1) where base=c0 */
+            pcas_ast_t *base = c0;
+            pcas_ast_t *arg  = c1;
+
+            /* Collapse base == e  -> ln(arg) */
+            if (base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER) {
                 add_token(TOK_LN);
-                index = _to_binary(b, data, index, lookup, err);
+                index = _to_binary(arg, data, index, lookup, err);
                 add_token(TOK_CLOSE_PAR);
                 break;
-            } else if(a->type == NODE_NUMBER && mp_rat_compare_value(a->op.num, 10, 1) == 0) {
+            }
+            /* Common log base 10 -> log(arg) */
+            if (base->type == NODE_NUMBER && mp_rat_compare_value(base->op.num, 10, 1) == 0) {
                 add_token(TOK_LOG);
-                index = _to_binary(b, data, index, lookup, err);
+                index = _to_binary(arg, data, index, lookup, err);
                 add_token(TOK_CLOSE_PAR);
                 break;
             }
 
-            add_token(TOK_LOG_BASE);
-            index = _to_binary(b, data, index, lookup, err);
+            /* General base log -> logBASE(arg, base) for TI tokens */
+            add_token(TOK_LOG_BASE);                             /* emits "log(" */
+            index = _to_binary(arg,  data, index, lookup, err);  /* value first  */
             add_token(TOK_COMMA);
-            index = _to_binary(a, data, index, lookup, err);
+            index = _to_binary(base, data, index, lookup, err);  /* then base    */
             add_token(TOK_CLOSE_PAR);
-
             break;
         }
+
         case OP_DERIV: {
             pcas_ast_t *a, *b, *c;
 
