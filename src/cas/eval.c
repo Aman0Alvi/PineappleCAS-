@@ -358,14 +358,21 @@ static bool eval_pow(pcas_ast_t *e, unsigned short flags) {
             return true;
         }
 
-        /*A^(-B) = 1/(A^B) */
+        /* A^(-B) = 1/(A^B)
+           BUT: avoid flipping when base is Euler's e and exponent is non-constant,
+           so e^(-2x) keeps its exponential form (useful for calculus output).
+           We still flip if base != e OR the exponent is a plain NUMBER. */
         if(is_negative_for_sure(b)) {
-            absolute_val(b);
-            replace_node(e, ast_MakeBinary(OP_DIV,
-                                ast_MakeNumber(num_FromInt(1)),
-                                ast_Copy(e)
-                            ));
-            return true;
+            bool base_is_e = (a->type == NODE_SYMBOL && a->op.symbol == SYM_EULER);
+            if (!base_is_e || b->type == NODE_NUMBER) {
+                absolute_val(b);
+                replace_node(e, ast_MakeBinary(OP_DIV,
+                                    ast_MakeNumber(num_FromInt(1)),
+                                    ast_Copy(e)
+                                ));
+                return true;
+            }
+            /* else: leave as-is (no reciprocal rewrite) */
         }
     }
 
@@ -454,6 +461,7 @@ static bool eval_pow(pcas_ast_t *e, unsigned short flags) {
 
     return changed;
 }
+
 
 static bool eval_int(pcas_ast_t *e, unsigned short flags) {
     bool changed = false;
