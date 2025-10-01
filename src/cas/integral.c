@@ -7,6 +7,8 @@ void replace_node(pcas_ast_t *dst, pcas_ast_t *src);
 
 /* Forward declaration so callers compile before the definition appears. */
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var);
+/* needed because we call it before its definition */
+static bool expo_linear_coeff(pcas_ast_t *expo, pcas_ast_t *var, pcas_ast_t **a_out);
 
 /* ---------------- IBP controls ---------------- */
 static bool s_ibp_enabled = true;
@@ -16,13 +18,43 @@ static int  s_ibp_depth = 0;
 static const int S_IBP_MAX_DEPTH = 8;
 
 /* ---------------- Small helpers ---------------- */
+static pcas_ast_t *integrate_poly_log_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var);
 
+/* forward decls */
+static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var);
+static pcas_ast_t *integrate(pcas_ast_t *expr, pcas_ast_t *var);
+
+static bool is_op(pcas_ast_t *e, OperatorType k);
+
+static bool is_ln_of_var_either_node(pcas_ast_t *node, pcas_ast_t *var);
+
+/* ---------------- LOG matching ---------------- */
+
+static bool is_ln_of_var_either_node(pcas_ast_t *node, pcas_ast_t *var) {
+    if (!node || !is_op(node, OP_LOG)) return false;
+    pcas_ast_t *c0 = ast_ChildGet(node, 0);
+    pcas_ast_t *c1 = ast_ChildGet(node, 1);
+
+    if (c1 == NULL) {
+        return c0 && c0->type == NODE_SYMBOL && ast_Compare(c0, var);
+    } else {
+        pcas_ast_t *base = c0;
+        pcas_ast_t *arg  = c1;
+        if (!(arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var))) return false;
+        return base && base->type == NODE_SYMBOL && base->op.symbol == SYM_EULER; /* base == e */
+    }
+}
 static inline pcas_ast_t *N(int v) { return ast_MakeNumber(num_FromInt(v)); }
 
 static void simp(pcas_ast_t *e) {
     simplify(e, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE |
                 SIMP_EVAL | SIMP_LIKE_TERMS);
 }
+
+/* Prototypes for helpers used before their definitions */
+static bool read_poly_power_of_var(pcas_ast_t *node, pcas_ast_t *var, int *deg_out);
+static bool trig_is_linear_arg_of_var(pcas_ast_t *t, pcas_ast_t *var, mp_rat *a_out, OperatorType *which);
+static bool expo_linear_coeff(pcas_ast_t *expo, pcas_ast_t *var, pcas_ast_t **a_out);
 
 
 /* ---------- Small trig helpers ---------- */
@@ -71,11 +103,11 @@ static mp_rat mp_binom_int(int n, int k) {
     return r;
 }
 
-
 static bool depends_on_var(pcas_ast_t *e, pcas_ast_t *var) {
     if (!e) return false;
     if (e->type == NODE_SYMBOL) return ast_Compare(e, var);
     if (e->type != NODE_OPERATOR) return false;
+
     for (pcas_ast_t *ch = ast_ChildGet(e, 0); ch; ch = ch->next) {
         if (depends_on_var(ch, var)) return true;
     }
@@ -92,6 +124,164 @@ static inline bool is_var_deg1(pcas_ast_t *e, pcas_ast_t *var) {
 
 static bool is_op(pcas_ast_t *e, OperatorType k) {
     return e && e->type == NODE_OPERATOR && optype(e) == k;
+}
+
+
+/* ∫ x^n (ln x)^m dx, with n >= 0 integer, m >= 1 integer.
+   Matches products like (const...) * x^n * (ln(x))^m in any order.
+   Supports ln(x) represented either as:
+     - unary LOG(arg) with arg==var, or
+     - binary LOG(base,arg) with base==e (SYM_EULER) and arg==var.
+   Finite, non-recursive reduction in m:
+     I_{n,0} = x^{n+1}/(n+1),
+     I_{n,m} = (x^{n+1}/(n+1)) (ln x)^m - (m/(n+1)) I_{n,m-1}.
+   Returns NULL if pattern not matched. */
+static pcas_ast_t *integrate_poly_times_log(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* Collect numeric constant c, polynomial degree n, and log power m. */
+    mp_rat c = num_FromInt(1);
+    int n = -1;  /* degree of x^n */
+    int m = 0;   /* total power of ln(x) */
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        /* numeric factor */
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+
+        /* x or x^k */
+        if (n < 0) {
+            int deg;
+            if (read_poly_power_of_var(ch, var, &deg)) { n = deg; continue; }
+        }
+
+        /* ln(x) or (ln(x))^k; ln can be unary LOG(x) or binary LOG(e,x) */
+        if (is_op(ch, OP_LOG)) {
+            if (is_ln_of_var_either_node(ch, var)) { m += 1; continue; }
+        } else if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch, 0), *e = ast_ChildGet(ch, 1);
+            if (e && e->type == NODE_NUMBER) {
+                int k;
+                if (is_op(b, OP_LOG) && is_ln_of_var_either_node(b, var) && get_int_exponent(e, &k) && k >= 1) {
+                    m += k;
+                    continue;
+                }
+            }
+        }
+
+        /* anything else must be constant wrt var; otherwise we don't match */
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+
+    /* need x^n (n >= 0) and (ln x)^m (m >= 1) */
+    if (n < 0 || m < 1) { num_Cleanup(c); return NULL; }
+
+    /* n+1 as rational */
+    int np1i = n + 1;
+    if (np1i == 0) { num_Cleanup(c); return NULL; }
+    mp_rat np1 = num_FromInt(np1i);
+
+    /* base_xpow = x^{n+1} (reused) */
+    pcas_ast_t *base_xpow = ast_MakeBinary(OP_POW, ast_Copy(var), ast_MakeNumber(num_Copy(np1)));
+
+    /* L = ln(x) (use unary form in the result) */
+    pcas_ast_t *L = ast_MakeUnary(OP_LOG, ast_Copy(var));
+
+    /* I_{n,0} = x^{n+1}/(n+1) */
+    pcas_ast_t *I_nm = ast_MakeBinary(OP_DIV, ast_Copy(base_xpow), ast_MakeNumber(num_Copy(np1)));
+
+    /* Build up to I_{n,m} iteratively (no recursion) */
+    for (int k = 1; k <= m; ++k) {
+        pcas_ast_t *Lk = (k == 1) ? ast_Copy(L) : ast_MakeBinary(OP_POW, ast_Copy(L), N(k));
+
+        /* term1 = (x^{n+1}/(n+1)) * L^k */
+        pcas_ast_t *term1 = ast_MakeBinary(
+            OP_MULT,
+            ast_MakeBinary(OP_DIV, ast_Copy(base_xpow), ast_MakeNumber(num_Copy(np1))),
+            Lk
+        );
+
+        /* term2 = (k/(n+1)) * I_{n,k-1} */
+        mp_rat k_over_np1 = num_FromInt(k);
+        mp_rat_div(k_over_np1, np1, k_over_np1);
+        pcas_ast_t *term2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(k_over_np1), I_nm);
+
+        /* I_{n,k} = term1 - term2 */
+        I_nm = ast_MakeBinary(OP_ADD, term1, ast_MakeBinary(OP_MULT, N(-1), term2));
+        simp(I_nm);
+    }
+
+    /* scale by numeric factor c if needed */
+    pcas_ast_t *res = (mp_rat_compare_value(c, 1, 1) != 0)
+                        ? ast_MakeBinary(OP_MULT, ast_MakeNumber(c), I_nm)
+                        : I_nm;
+    simp(res);
+
+    /* cleanup */
+    ast_Cleanup(L);
+    num_Cleanup(np1);
+    return res;
+}
+
+
+
+/* For t = sin(ax [+ b]) or cos(ax [+ b]), return true and:
+   - *a_out = mp_rat copy of 'a' (caller must num_Cleanup),
+   - *which = OP_SIN or OP_COS.
+   Accept arg of the form a*x, a*x + const, or const + a*x. */
+static bool trig_is_linear_arg_of_var(pcas_ast_t *t, pcas_ast_t *var, mp_rat *a_out, OperatorType *which) {
+    if (!t || (!is_op(t, OP_SIN) && !is_op(t, OP_COS))) return false;  /* <- parentheses fix */
+    pcas_ast_t *arg = ast_ChildGet(t,0);
+    if (!arg) return false;
+
+    /* arg == x */
+    if (arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
+        if (which) *which = optype(t);
+        if (a_out) *a_out = num_FromInt(1);
+        return true;
+    }
+
+    /* arg == k*x */
+    if (is_op(arg, OP_MULT)) {
+        mp_rat a = num_FromInt(1);
+        bool saw_x = false, ok = true;
+        for (pcas_ast_t *ch = ast_ChildGet(arg,0); ch && ok; ch = ch->next) {
+            if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) {
+                if (saw_x) ok = false; else saw_x = true;
+            } else if (ch->type == NODE_NUMBER) {
+                mp_rat_mul(a, ch->op.num, a);
+            } else {
+                ok = false;
+            }
+        }
+        if (ok && saw_x) {
+            if (which) *which = optype(t);
+            if (a_out) *a_out = a; else num_Cleanup(a);
+            return true;
+        }
+        num_Cleanup(a);
+    }
+
+    /* arg == k*x + c  (or c + k*x) */
+    if (is_op(arg, OP_ADD)) {
+        pcas_ast_t *term_with_x = NULL;
+        for (pcas_ast_t *ch = ast_ChildGet(arg,0); ch; ch = ch->next) {
+            if (depends_on_var(ch, var)) {
+                if (term_with_x) return false;
+                term_with_x = ch;
+            } else if (!is_const_wrt(ch, var)) {
+                return false;
+            }
+        }
+        if (!term_with_x) return false;
+
+        /* re-check only the linear-in-x term */
+        return trig_is_linear_arg_of_var(
+            is_op(t, OP_SIN) ? ast_MakeUnary(OP_SIN, ast_Copy(term_with_x))
+                             : ast_MakeUnary(OP_COS, ast_Copy(term_with_x)),
+            var, a_out, which);
+    }
+
+    return false;
 }
 
 
@@ -142,7 +332,7 @@ static bool is_one(pcas_ast_t *e) {
     return mp_rat_compare_value(e->op.num, 1, 1) == 0;
 }
 
-/* ---------------- LOG matching ---------------- */
+
 
 /* Return 1 if node is unary natural log ln(arg) with arg==var.
    Return 2 if node is binary log_base(arg) with arg==var and set *base_out=base.
@@ -553,6 +743,10 @@ static pcas_ast_t *integrate_sin_cos_product(pcas_ast_t *expr, pcas_ast_t *var) 
         }
     }
 
+    /* silence “set but not used” (kept for potential future use) */
+    (void)sin_pow;
+    (void)cos_pow;
+
     if (m<0 || n<0) return NULL;
     if ((m & 1) == 1) {
         /* m odd: peel one sin, expand (1 - cos^2)^k * cos^n and integrate in u=cos, add minus sign */
@@ -693,6 +887,83 @@ static pcas_ast_t *integrate_x_power_any(pcas_ast_t *expr, pcas_ast_t *var) {
                      ast_MakeBinary(OP_POW, ast_Copy(var), ast_MakeNumber(num_Copy(np1))),
                      ast_MakeNumber(np1));
     simp(res);
+    return res;
+}
+
+/* ∫ e^{a x} sin(b x) dx  and  ∫ e^{a x} cos(b x) dx  with linear args.
+   Closed forms that avoid cyclic IBP:
+     ∫ e^{ax} sin(bx) dx = e^{ax}(a sin(bx) - b cos(bx)) / (a^2 + b^2)
+     ∫ e^{ax} cos(bx) dx = e^{ax}(a cos(bx) + b sin(bx)) / (a^2 + b^2)
+   Accepts exponent a*x[+c] and trig b*x[+d]. */
+static pcas_ast_t *integrate_exp_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    pcas_ast_t *exp = NULL, *tr = NULL;
+    mp_rat c = num_FromInt(1);
+
+    /* find e^(...) and sin/cos(...); gather numeric constants */
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch = ch->next) {
+        if (!exp && is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && b->op.symbol==SYM_EULER && e) { exp = ch; continue; }
+        }
+        if (!tr && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) { tr = ch; continue; }
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+    if (!exp || !tr) { num_Cleanup(c); return NULL; }
+
+    /* read 'a' from exponent */
+    pcas_ast_t *expo = ast_ChildGet(exp,1);
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(expo, var, &a_node)) { num_Cleanup(c); return NULL; }
+    mp_rat a = num_Copy(a_node->op.num); ast_Cleanup(a_node);
+    if (mp_rat_compare_zero(a) == 0) { num_Cleanup(c); num_Cleanup(a); return NULL; }
+
+    /* read 'b' and OP_SIN/OP_COS from trig */
+    mp_rat b = NULL; OperatorType which;
+    if (!trig_is_linear_arg_of_var(tr, var, &b, &which)) { num_Cleanup(c); num_Cleanup(a); return NULL; }
+
+    /* denom = a^2 + b^2 */
+    mp_rat a2 = num_FromInt(0); mp_rat_mul(a, a, a2);
+    mp_rat b2 = num_FromInt(0); mp_rat_mul(b, b, b2);
+    mp_rat denom = num_FromInt(0); mp_rat_add(a2, b2, denom);
+    if (mp_rat_compare_zero(denom) == 0) {
+        /* degenerate a=b=0 → integrand constant */
+        pcas_ast_t *res = ast_MakeBinary(OP_MULT, ast_MakeNumber(c), ast_Copy(var));
+        simp(res);
+        num_Cleanup(a); num_Cleanup(b); num_Cleanup(a2); num_Cleanup(b2); num_Cleanup(denom);
+        return res;
+    }
+
+    /* rebuild e^{exponent} exactly as given, and sin(bx)/cos(bx) with same slope b */
+    pcas_ast_t *ea = ast_MakeBinary(OP_POW, ast_MakeSymbol(SYM_EULER), ast_Copy(expo));
+    pcas_ast_t *bx = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(b)), ast_Copy(var));
+    pcas_ast_t *sinbx = ast_MakeUnary(OP_SIN, ast_Copy(bx));
+    pcas_ast_t *cosbx = ast_MakeUnary(OP_COS, bx);
+
+    pcas_ast_t *comb = NULL;
+    if (which == OP_SIN) {
+        /* a*sin - b*cos */
+        pcas_ast_t *t1 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(a)), sinbx);
+        mp_rat negb = num_Copy(b); mp_rat_neg(negb, negb);
+        pcas_ast_t *t2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(negb), cosbx);
+        comb = ast_MakeBinary(OP_ADD, t1, t2);
+    } else { /* OP_COS */
+        /* a*cos + b*sin */
+        pcas_ast_t *t1 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(a)), cosbx);
+        pcas_ast_t *t2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(b)), sinbx);
+        comb = ast_MakeBinary(OP_ADD, t1, t2);
+    }
+
+    pcas_ast_t *nume = ast_MakeBinary(OP_MULT, ea, comb);
+    pcas_ast_t *core = ast_MakeBinary(OP_DIV, nume, ast_MakeNumber(num_Copy(denom)));
+    pcas_ast_t *res  = (mp_rat_compare_value(c,1,1)!=0)
+                        ? ast_MakeBinary(OP_MULT, ast_MakeNumber(c), core)
+                        : core;
+    simp(res);
+
+    num_Cleanup(a); num_Cleanup(b); num_Cleanup(a2); num_Cleanup(b2); num_Cleanup(denom);
     return res;
 }
 
@@ -1473,34 +1744,751 @@ static pcas_ast_t *integrate_power(pcas_ast_t *expr, pcas_ast_t *var) {
     return NULL;
 }
 
+/* Return true if node is x^deg (deg>=1) or x (deg=1). Writes deg to *deg_out. */
+static bool read_poly_power_of_var(pcas_ast_t *node, pcas_ast_t *var, int *deg_out) {
+    if (!node) return false;
 
+    if (node->type == NODE_SYMBOL && ast_Compare(node, var)) {
+        *deg_out = 1;
+        return true;
+    }
+
+    if (isoptype(node, OP_POW)) {
+        pcas_ast_t *b = ast_ChildGet(node,0), *e = ast_ChildGet(node,1);
+        if (b && b->type == NODE_SYMBOL && ast_Compare(b, var) &&
+            e && e->type == NODE_NUMBER) {
+            mp_small num, den;
+            if (mp_rat_to_ints(e->op.num, &num, &den) == MP_OK && den == 1 && num >= 1) {
+                *deg_out = (int)num;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+
+/* ∫ x^n ln x dx = (x^{n+1}/(n+1)) ln x - x^{n+1}/(n+1)^2, n>=0 */
+static pcas_ast_t *integrate_xn_lnx_product(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    bool saw_lnx = false; int n = -1; mp_rat c = num_FromInt(1);
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (ch->type==NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+        if (!saw_lnx && is_op(ch, OP_LOG)) {
+            pcas_ast_t *a0 = ast_ChildGet(ch,0), *a1 = ast_ChildGet(ch,1);
+            if (a1==NULL && a0 && a0->type==NODE_SYMBOL && ast_Compare(a0,var)) { saw_lnx = true; continue; }
+        }
+        if (n < 0) { int deg; if (read_poly_power_of_var(ch, var, &deg)) { n = deg; continue; } }
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+        /* other constants would be NODE_NUMBER; anything else → bail */
+        num_Cleanup(c); return NULL;
+    }
+    if (!saw_lnx || n < 0) { num_Cleanup(c); return NULL; }
+
+    int np1i = n + 1;
+    mp_rat np1 = num_FromInt(np1i);
+    mp_rat np1_sq = num_FromInt(np1i); mp_rat_mul(np1_sq, np1_sq, np1_sq);
+
+    pcas_ast_t *x_np1_a = ast_MakeBinary(OP_POW, ast_Copy(var), ast_MakeNumber(num_Copy(np1)));
+    pcas_ast_t *x_np1_b = ast_MakeBinary(OP_POW, ast_Copy(var), ast_MakeNumber(num_Copy(np1)));
+
+    pcas_ast_t *term1 = ast_MakeBinary(OP_MULT,
+                        ast_MakeBinary(OP_DIV, x_np1_a, ast_MakeNumber(num_Copy(np1))),
+                        ast_MakeUnary(OP_LOG, ast_Copy(var)));
+    pcas_ast_t *term2 = ast_MakeBinary(OP_DIV, x_np1_b, ast_MakeNumber(np1_sq));
+
+    pcas_ast_t *core = ast_MakeBinary(OP_ADD, term1, ast_MakeBinary(OP_MULT, N(-1), term2));
+    pcas_ast_t *res  = (mp_rat_compare_value(c,1,1)!=0)
+                        ? ast_MakeBinary(OP_MULT, ast_MakeNumber(c), core)
+                        : core;
+    simp(res);
+    return res;
+}
+
+
+/* ∫ x^n e^{a x} dx with e^{a x [+ b]} allowed (b folds into the power node).
+   Finite non-recursive IBP (tabular). Returns NULL if pattern not matched. */
+static pcas_ast_t *integrate_poly_times_exp_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    int n = -1;
+    pcas_ast_t *exp = NULL;
+    mp_rat c = num_FromInt(1);
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+        if (n < 0) { int deg; if (read_poly_power_of_var(ch, var, &deg)) { n = deg; continue; } }
+        if (!exp && is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && b->op.symbol==SYM_EULER && e) { exp = ch; continue; }
+        }
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+    if (n < 0 || !exp) { num_Cleanup(c); return NULL; }
+
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(ast_ChildGet(exp,1), var, &a_node)) { num_Cleanup(c); return NULL; }
+    mp_rat a = num_Copy(a_node->op.num); ast_Cleanup(a_node);
+    if (mp_rat_compare_zero(a) == 0) { num_Cleanup(c); num_Cleanup(a); return NULL; }
+
+    pcas_ast_t *e_ax = ast_MakeBinary(OP_POW, ast_MakeSymbol(SYM_EULER), ast_Copy(ast_ChildGet(exp,1)));
+    pcas_ast_t *sum = N(0);
+
+    mp_rat coeff = num_FromInt(1);
+    mp_rat inva  = num_FromInt(1); mp_rat_div(inva, a, inva);
+    int p = n;
+
+    while (1) {
+        mp_rat termc = num_FromInt(0); mp_rat_mul(coeff, inva, termc); /* coeff/a */
+
+        pcas_ast_t *xpow = (p==0) ? N(1) :
+                           (p==1) ? ast_Copy(var) :
+                                    ast_MakeBinary(OP_POW, ast_Copy(var), N(p));
+
+        pcas_ast_t *term = ast_MakeBinary(
+            OP_MULT,
+            ast_MakeNumber(termc),
+            ast_MakeBinary(OP_MULT, xpow, ast_Copy(e_ax))
+        );
+        sum = ast_MakeBinary(OP_ADD, sum, term);
+
+        if (p == 0) break;
+
+        mp_rat tmp = num_FromInt(p);
+        mp_rat_mul(coeff, tmp, coeff);
+        mp_rat_div(coeff, a, coeff);
+        mp_rat_neg(coeff, coeff);
+        num_Cleanup(tmp);
+        p -= 1;
+    }
+
+    pcas_ast_t *res = (mp_rat_compare_value(c,1,1)!=0)
+                        ? ast_MakeBinary(OP_MULT, ast_MakeNumber(c), sum)
+                        : sum;
+    simp(res);
+    num_Cleanup(a);
+    return res;
+}
+
+
+
+/* ∫ x^n * (sin|cos)(u) dx for integer n>=0 and linear u = a*var + b (a != 0)
+   Non-recursive tabular implementation:
+     Define I_c(k) = ∫ x^k cos(u) dx, I_s(k) = ∫ x^k sin(u) dx, u' = a
+     Bases:
+       I_c(0) =  sin(u)/a
+       I_s(0) = -cos(u)/a
+     Recurrences (k >= 1):
+       I_c(k) =  x^k sin(u)/a - (k/a) * I_s(k-1)
+       I_s(k) = -x^k cos(u)/a + (k/a) * I_c(k-1)
+   We build up from k=0..n and return I_c(n) or I_s(n) accordingly.
+   Pattern match: product of (numeric consts) * (x or x^n) * (sin(u) or cos(u)); nothing else with var.
+*/
+static pcas_ast_t *integrate_poly_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* Parse product */
+    mp_rat c = num_FromInt(1);
+    int n = -1; /* degree of x^n */
+    pcas_ast_t *trig = NULL;   /* SIN or COS node */
+    pcas_ast_t *u    = NULL;   /* its argument */
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+
+        if (n < 0) {
+            int deg;
+            if (read_poly_power_of_var(ch, var, &deg)) { n = deg; continue; }
+        }
+
+        if (!trig && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) {
+            pcas_ast_t *arg = ast_ChildGet(ch, 0);
+            if (arg && depends_on_var(arg, var)) { trig = ch; u = arg; continue; }
+        }
+
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+
+    if (n < 0 || !trig || !u) { num_Cleanup(c); return NULL; }
+
+    /* u must be linear: u = a*var + b, with a != 0 */
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) { num_Cleanup(c); return NULL; }
+    if (!a_node || a_node->type != NODE_NUMBER || mp_rat_compare_zero(a_node->op.num) == 0) {
+        if (a_node) ast_Cleanup(a_node);
+        num_Cleanup(c);
+        return NULL;
+    }
+    mp_rat a = num_Copy(a_node->op.num);
+    ast_Cleanup(a_node);
+
+    /* Precompute 1/a and 1/a^2 as rationals we’ll copy when needed */
+    mp_rat inva  = num_FromInt(1); mp_rat_div(inva,  a, inva);             /* 1/a */
+    mp_rat inva2 = num_FromInt(1); mp_rat_div(inva2, a, inva2); mp_rat_div(inva2, a, inva2); /* 1/a^2 */
+
+    /* Bases */
+    pcas_ast_t *sin_u = ast_MakeUnary(OP_SIN, ast_Copy(u));
+    pcas_ast_t *cos_u = ast_MakeUnary(OP_COS, ast_Copy(u));
+
+    pcas_ast_t *I_c = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(inva)), ast_Copy(sin_u));  /* sin(u)/a */
+    pcas_ast_t *I_s = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(inva)),
+                                     ast_MakeBinary(OP_MULT, N(-1), ast_Copy(cos_u)));           /* -cos(u)/a */
+    simp(I_c); simp(I_s);
+
+    /* Build up k = 1..n */
+    for (int k = 1; k <= n; ++k) {
+        /* x^k */
+        pcas_ast_t *xk = (k == 1) ? ast_Copy(var)
+                                  : ast_MakeBinary(OP_POW, ast_Copy(var), N(k));
+
+        /* I_c(k) = x^k sin(u)/a - (k/a) * I_s(k-1) */
+        pcas_ast_t *term1_c = ast_MakeBinary(OP_MULT,
+                                ast_MakeNumber(num_Copy(inva)),
+                                ast_MakeBinary(OP_MULT, ast_Copy(xk), ast_Copy(sin_u)));
+        mp_rat k_over_a = num_FromInt(k); mp_rat_div(k_over_a, a, k_over_a);
+        pcas_ast_t *term2_c = ast_MakeBinary(OP_MULT,
+                                ast_MakeNumber(k_over_a),
+                                I_s); /* I_s is I_s(k-1) */
+        pcas_ast_t *I_c_new = ast_MakeBinary(OP_ADD, term1_c, ast_MakeBinary(OP_MULT, N(-1), term2_c));
+        simp(I_c_new);
+
+        /* I_s(k) = - x^k cos(u)/a + (k/a) * I_c(k-1) */
+        pcas_ast_t *term1_s = ast_MakeBinary(OP_MULT,
+                                ast_MakeNumber(num_Copy(inva)),
+                                ast_MakeBinary(OP_MULT, N(-1),
+                                    ast_MakeBinary(OP_MULT, ast_Copy(xk), ast_Copy(cos_u))));
+        mp_rat k_over_a2 = num_FromInt(k); mp_rat_div(k_over_a2, a, k_over_a2);
+        pcas_ast_t *term2_s = ast_MakeBinary(OP_MULT,
+                                ast_MakeNumber(k_over_a2),
+                                I_c); /* I_c is I_c(k-1) */
+        pcas_ast_t *I_s_new = ast_MakeBinary(OP_ADD, term1_s, term2_s);
+        simp(I_s_new);
+
+        ast_Cleanup(I_c);
+        ast_Cleanup(I_s);
+        ast_Cleanup(xk);
+
+        I_c = I_c_new;
+        I_s = I_s_new;
+    }
+
+    /* Select final */
+    pcas_ast_t *Result = is_op(trig, OP_COS) ? I_c : I_s;
+
+    /* Apply numeric front factor c */
+    if (mp_rat_compare_value(c, 1, 1) != 0) {
+        Result = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), Result);
+        simp(Result);
+    }
+
+    /* cleanup */
+    ast_Cleanup(sin_u);
+    ast_Cleanup(cos_u);
+    num_Cleanup(c);
+    num_Cleanup(a);
+    num_Cleanup(inva);
+    num_Cleanup(inva2);
+
+    return Result;
+}
+
+
+
+
+
+/* Handle c*x*sin^2(x), c*x*cos^2(x), c*x*tan^2(x) (closed forms; avoids IBP loops). */
+static pcas_ast_t *integrate_x_times_trig_square(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    bool saw_x = false;
+    OperatorType sq_kind = (OperatorType)0;
+    mp_rat c = num_FromInt(1);
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (!saw_x && is_var_deg1(ch, var)) { saw_x = true; continue; }
+        if (!sq_kind && is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *p = ast_ChildGet(ch,1);
+            if (p && p->type==NODE_NUMBER && mp_rat_compare_value(p->op.num,2,1)==0) {
+                if (is_op(b, OP_SIN) || is_op(b, OP_COS) || is_op(b, OP_TAN)) {
+                    pcas_ast_t *a = ast_ChildGet(b,0);
+                    if (a && a->type==NODE_SYMBOL && ast_Compare(a,var)) { sq_kind = optype(b); continue; }
+                }
+            }
+        }
+        if (ch->type==NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+
+    if (!saw_x || !sq_kind) { num_Cleanup(c); return NULL; }
+
+    pcas_ast_t *res = NULL;
+    if (sq_kind == OP_TAN) {
+        /* ∫ x tan^2 x dx = x tan x + ln|cos x| - x^2/2 */
+        pcas_ast_t *x_tanx = ast_MakeBinary(OP_MULT, ast_Copy(var), ast_MakeUnary(OP_TAN, ast_Copy(var)));
+        pcas_ast_t *lncos  = ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(var)));
+        pcas_ast_t *term   = ast_MakeBinary(OP_ADD, x_tanx, lncos);
+        res = ast_MakeBinary(OP_ADD, term, ast_MakeBinary(OP_MULT, N(-1),
+                          ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(2))));
+    } else if (sq_kind == OP_SIN) {
+        /* x sin^2 x = x*(1-cos 2x)/2 ⇒ ∫ = x^2/4 - x sin 2x /4 - cos 2x /8 */
+        pcas_ast_t *x2_over4 = ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(4));
+        pcas_ast_t *xsin2x   = ast_MakeBinary(OP_MULT, ast_Copy(var),
+                               ast_MakeUnary(OP_SIN, ast_MakeBinary(OP_MULT, N(2), ast_Copy(var))));
+        pcas_ast_t *cos2x    = ast_MakeUnary(OP_COS, ast_MakeBinary(OP_MULT, N(2), ast_Copy(var)));
+        pcas_ast_t *res1     = ast_MakeBinary(OP_ADD, x2_over4,
+                               ast_MakeBinary(OP_MULT, N(-1), ast_MakeBinary(OP_DIV, xsin2x, N(4))));
+        res = ast_MakeBinary(OP_ADD, res1,
+                ast_MakeBinary(OP_MULT, N(-1), ast_MakeBinary(OP_DIV, cos2x, N(8))));
+    } else if (sq_kind == OP_COS) {
+        /* x cos^2 x = x*(1+cos 2x)/2 ⇒ ∫ = x^2/4 + x sin 2x /4 + cos 2x /8 */
+        pcas_ast_t *x2_over4 = ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(4));
+        pcas_ast_t *xsin2x   = ast_MakeBinary(OP_MULT, ast_Copy(var),
+                               ast_MakeUnary(OP_SIN, ast_MakeBinary(OP_MULT, N(2), ast_Copy(var))));
+        pcas_ast_t *cos2x    = ast_MakeUnary(OP_COS, ast_MakeBinary(OP_MULT, N(2), ast_Copy(var)));
+        pcas_ast_t *res1     = ast_MakeBinary(OP_ADD, x2_over4, ast_MakeBinary(OP_DIV, xsin2x, N(4)));
+        res = ast_MakeBinary(OP_ADD, res1, ast_MakeBinary(OP_DIV, cos2x, N(8)));
+    }
+
+    if (!res) { num_Cleanup(c); return NULL; }
+    if (mp_rat_compare_value(c,1,1)!=0)
+        res = ast_MakeBinary(OP_MULT, ast_MakeNumber(c), res);
+    simp(res);
+    return res;
+}
+
+/* Closed-form handler for products of the shape: (const) * x * trig^2(u),
+   where u is linear in 'var' (u = a*var + b). Supports sin^2, cos^2, tan^2.
+   Returns an antiderivative WITHOUT recursing into integrate_node (prevents loops).
+   If the pattern doesn't match, returns NULL.
+
+   Identities used:
+     sin^2(u) = (1 - cos(2u))/2
+     cos^2(u) = (1 + cos(2u))/2
+     tan^2(u) = sec^2(u) - 1
+
+   Closed forms (a ≠ 0):
+     ∫ x cos(κx+φ) dx =  x sin(κx+φ)/κ + cos(κx+φ)/κ^2
+     ∫ x sin(κx+φ) dx = -x cos(κx+φ)/κ + sin(κx+φ)/κ^2
+     ∫ x sec^2(κx+φ) dx = x tan(κx+φ)/κ + (1/κ^2) ln|cos(κx+φ)|
+*/
+static pcas_ast_t *rewrite_trig_square_in_product_and_integrate(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* 1) Parse product: require exactly one 'x', exactly one trig^2 factor,
+          and everything else numeric constants. Accumulate numeric constant 'c'. */
+    bool saw_x = false;
+    pcas_ast_t *trig_pow2 = NULL;  /* (sin u)^2, (cos u)^2, or (tan u)^2 */
+    mp_rat c = num_FromInt(1);
+
+    for (pcas_ast_t *f = ast_ChildGet(expr, 0); f; f = f->next) {
+        if (f->type == NODE_NUMBER) {
+            mp_rat_mul(c, f->op.num, c);
+            continue;
+        }
+        if (is_var_deg1(f, var)) {
+            if (saw_x) { num_Cleanup(c); return NULL; } /* more than one x */
+            saw_x = true;
+            continue;
+        }
+        if (is_op(f, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(f,0), *e = ast_ChildGet(f,1);
+            if (e && e->type == NODE_NUMBER && mp_rat_compare_value(e->op.num, 2, 1) == 0 &&
+                b && (is_op(b, OP_SIN) || is_op(b, OP_COS) || is_op(b, OP_TAN))) {
+                if (trig_pow2) { num_Cleanup(c); return NULL; } /* more than one trig^2 */
+                trig_pow2 = f;
+                continue;
+            }
+        }
+        /* Anything else must be constant wrt var; otherwise bail. */
+        if (!is_const_wrt(f, var)) { num_Cleanup(c); return NULL; }
+    }
+
+    if (!saw_x || !trig_pow2) { num_Cleanup(c); return NULL; }
+
+    /* 2) Extract u from trig^2(u) and ensure u is linear in var: u = a*var + b */
+    pcas_ast_t *base = ast_ChildGet(trig_pow2, 0); /* SIN/COS/TAN */
+    pcas_ast_t *u    = ast_ChildGet(base, 0);      /* argument */
+    if (!u) { num_Cleanup(c); return NULL; }
+
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) { num_Cleanup(c); return NULL; }   /* uses your existing helper */
+    if (!a_node || a_node->type != NODE_NUMBER || mp_rat_compare_zero(a_node->op.num) == 0) {
+        if (a_node) ast_Cleanup(a_node);
+        num_Cleanup(c);
+        return NULL; /* non-linear or a==0 */
+    }
+    mp_rat a = num_Copy(a_node->op.num);
+    ast_Cleanup(a_node);
+
+    /* Prepare rationals we'll need */
+    mp_rat two   = num_FromInt(2);
+    mp_rat inva  = num_FromInt(1); mp_rat_div(inva, a, inva);                    /* 1/a */
+    mp_rat inva2 = num_FromInt(1); mp_rat_div(inva2, a, inva2); mp_rat_div(inva2, a, inva2); /* 1/a^2 */
+
+    /* Result we'll build */
+    pcas_ast_t *result = NULL;
+
+    if (is_op(base, OP_SIN) || is_op(base, OP_COS)) {
+        /* sin^2(u) or cos^2(u) */
+        bool is_sin2 = is_op(base, OP_SIN);
+
+        /* Part A: (c/2) * ∫ x dx = (c/2) * x^2/2 */
+        mp_rat c_over2 = num_Copy(c); mp_rat_div(c_over2, two, c_over2);   /* c/2 */
+        pcas_ast_t *Ix  = ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(2));  /* x^2/2 */
+        pcas_ast_t *partA = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c_over2)), Ix);
+        simp(partA);
+
+        /* Part B: (± c/2) * ∫ x * cos(2u) dx, with κ = 2a */
+        pcas_ast_t *two_u  = ast_MakeBinary(OP_MULT, N(2), ast_Copy(u));
+        pcas_ast_t *cos_2u = ast_MakeUnary(OP_COS, ast_Copy(two_u));
+
+        /* κ = 2a, 1/κ and 1/κ^2  */
+        mp_rat twoa = num_Copy(a); mp_rat_mul(twoa, two, twoa);                         /* 2a */
+        mp_rat inv_twoa  = num_FromInt(1); mp_rat_div(inv_twoa, twoa, inv_twoa);       /* 1/(2a) */
+        mp_rat inv_twoa2 = num_FromInt(1); mp_rat_div(inv_twoa2, twoa, inv_twoa2); mp_rat_div(inv_twoa2, twoa, inv_twoa2); /* 1/(2a)^2 */
+
+        /* ∫ x cos(2u) dx = x sin(2u)/(2a) + cos(2u)/(2a)^2 */
+        pcas_ast_t *sin_2u = ast_MakeUnary(OP_SIN, two_u); /* two_u already a new node */
+        pcas_ast_t *term1 = ast_MakeBinary(OP_MULT, ast_Copy(var), sin_2u);                    /* x sin(2u) */
+        term1 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(inv_twoa)), term1);           /* / (2a) */
+
+        pcas_ast_t *term2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(inv_twoa2)), ast_Copy(cos_2u));
+
+        pcas_ast_t *int_x_cos_2u = ast_MakeBinary(OP_ADD, term1, term2);
+        simp(int_x_cos_2u);
+
+        mp_rat c_over2_signed = num_Copy(c_over2);
+        if (is_sin2) mp_rat_neg(c_over2_signed, c_over2_signed); /* sin^2 has minus sign */
+
+        pcas_ast_t *partB = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c_over2_signed)), int_x_cos_2u);
+        simp(partB);
+
+        result = ast_MakeBinary(OP_ADD, partA, partB);
+        simp(result);
+
+        /* cleanup locals */
+        num_Cleanup(twoa);
+        num_Cleanup(inv_twoa);
+        num_Cleanup(inv_twoa2);
+        num_Cleanup(c_over2_signed);
+        num_Cleanup(c_over2);
+    } else {
+        /* tan^2(u): c * ( ∫ x sec^2(u) dx - ∫ x dx ) */
+        /* ∫ x sec^2(u) dx = x tan(u)/a + (1/a^2) ln|cos(u)| */
+        pcas_ast_t *tanu = ast_MakeUnary(OP_TAN, ast_Copy(u));
+        pcas_ast_t *x_tan_over_a = ast_MakeBinary(OP_MULT,
+                                   ast_MakeNumber(num_Copy(inva)),
+                                   ast_MakeBinary(OP_MULT, ast_Copy(var), tanu));   /* (1/a) * x * tan(u) */
+        pcas_ast_t *ln_cosu = ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(u)));
+        pcas_ast_t *ln_term = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(inva2)), ln_cosu);
+        pcas_ast_t *I_sec2 = ast_MakeBinary(OP_ADD, x_tan_over_a, ln_term);
+        simp(I_sec2);
+
+        /* ∫ x dx = x^2/2 */
+        pcas_ast_t *I_x = ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(2));
+
+        /* c * ( I_sec2 - I_x ) */
+        pcas_ast_t *diff = ast_MakeBinary(OP_ADD, I_sec2, ast_MakeBinary(OP_MULT, N(-1), I_x));
+        result = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), diff);
+        simp(result);
+    }
+
+    /* cleanup rationals */
+    num_Cleanup(c);
+    num_Cleanup(a);
+    num_Cleanup(inva);
+    num_Cleanup(inva2);
+    num_Cleanup(two);
+
+    return result;
+}
+
+/* DIRECT closed-form for ∫ x^n * (sin|cos)(u) dx, n>=0, u = a*var + b with a!=0.
+   Pattern-match a single trig(u) factor and accumulate total degree of x across factors.
+   Uses the finite sum from the e^{i(ax+b)} derivation.
+   IMPORTANT: coeff_k does NOT include (-1)^k; the sign cycle below already accounts for it. */
+static pcas_ast_t *integrate_xn_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* Parse product: numeric factor c, degree n, trig node & its argument u */
+    mp_rat c = num_FromInt(1);
+    int n = 0;
+    pcas_ast_t *trig = NULL, *u = NULL;
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch = ch->next) {
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+
+        /* accumulate x^k */
+        if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) { n += 1; continue; }
+        if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER) {
+                mp_small num, den;
+                if (mp_rat_to_ints(e->op.num,&num,&den)==MP_OK && den==1 && num>=1) { n += (int)num; continue; }
+            }
+        }
+
+        /* single trig(u) */
+        if (!trig && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) {
+            pcas_ast_t *arg = ast_ChildGet(ch, 0);
+            if (arg && depends_on_var(arg, var)) { trig = ch; u = arg; continue; }
+        }
+
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+    if (!trig || !u) { num_Cleanup(c); return NULL; }
+
+    /* u = a*var + b with a != 0 */
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) { num_Cleanup(c); return NULL; }
+    if (!a_node || a_node->type!=NODE_NUMBER || mp_rat_compare_zero(a_node->op.num)==0) {
+        if (a_node) ast_Cleanup(a_node);
+        num_Cleanup(c);
+        return NULL;
+    }
+    mp_rat a = num_Copy(a_node->op.num);
+    ast_Cleanup(a_node);
+
+    /* Prebuild sin(u), cos(u) once */
+    pcas_ast_t *sin_u = ast_MakeUnary(OP_SIN, ast_Copy(u));
+    pcas_ast_t *cos_u = ast_MakeUnary(OP_COS, ast_Copy(u));
+
+    /* Polynomials Ps, Pc so that result = Ps*sin(u) + Pc*cos(u) */
+    pcas_ast_t *Ps = N(0), *Pc = N(0);
+
+    /* Accumulators: inva_pow = 1/a^{k+1}, fall = n!/(n-k)! */
+    mp_rat inva     = num_FromInt(1); mp_rat_div(inva, a, inva);   /* 1/a */
+    mp_rat inva_pow = num_Copy(inva);                               /* 1/a^{1} */
+    mp_rat fall     = num_FromInt(1);                               /* k=0: 1 */
+
+    for (int k = 0; k <= n; ++k) {
+        /* coeff_k = (n!/(n-k)!) * (1/a^{k+1})  (NO (-1)^k here) */
+        mp_rat coeff = num_Copy(fall);
+        mp_rat_mul(coeff, inva_pow, coeff);
+
+        pcas_ast_t *xpow = (n-k==0) ? N(1) : ast_MakeBinary(OP_POW, ast_Copy(var), N(n-k));
+
+        int r = k & 3; /* k mod 4 */
+
+        if (is_op(trig, OP_COS)) {
+            /* cos integral pattern: +sin, +cos, −sin, −cos */
+            if (r == 0) {
+                Ps = ast_MakeBinary(OP_ADD, Ps, ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow));
+            } else if (r == 1) {
+                Pc = ast_MakeBinary(OP_ADD, Pc, ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow));
+            } else if (r == 2) {
+                Ps = ast_MakeBinary(OP_ADD, Ps, ast_MakeBinary(OP_MULT, N(-1),
+                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow)));
+            } else { /* r == 3 */
+                Pc = ast_MakeBinary(OP_ADD, Pc, ast_MakeBinary(OP_MULT, N(-1),
+                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow)));
+            }
+        } else {
+            /* sin integral pattern: −cos, +sin, +cos, −sin */
+            if (r == 0) {
+                Pc = ast_MakeBinary(OP_ADD, Pc, ast_MakeBinary(OP_MULT, N(-1),
+                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow)));
+            } else if (r == 1) {
+                Ps = ast_MakeBinary(OP_ADD, Ps, ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow));
+            } else if (r == 2) {
+                Pc = ast_MakeBinary(OP_ADD, Pc, ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow));
+            } else { /* r == 3 */
+                Ps = ast_MakeBinary(OP_ADD, Ps, ast_MakeBinary(OP_MULT, N(-1),
+                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(coeff)), xpow)));
+            }
+        }
+
+        simp(Ps); simp(Pc);
+        num_Cleanup(coeff);
+
+        /* Update accumulators for next k (stop before multiplying by zero). */
+        if (k < n) {
+            mp_rat_mul(inva_pow, inva, inva_pow);        /* 1/a^{k+2} */
+            mp_rat mul = num_FromInt(n - k);             /* (n-k) */
+            mp_rat_mul(fall, mul, fall);                 /* n!/(n-(k+1))! */
+            num_Cleanup(mul);
+        }
+    }
+
+    pcas_ast_t *res = ast_MakeBinary(
+        OP_ADD,
+        ast_MakeBinary(OP_MULT, Ps, sin_u),
+        ast_MakeBinary(OP_MULT, Pc, cos_u)
+    );
+
+    if (mp_rat_compare_value(c,1,1)!=0) {
+        res = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), res);
+    }
+    simp(res);
+
+    num_Cleanup(c);
+    num_Cleanup(a);
+    num_Cleanup(inva);
+    num_Cleanup(inva_pow);
+    num_Cleanup(fall);
+
+    return res;
+}
+
+
+/* ∫ x^n ln(x) * (sin|cos)(a*x + b) dx, with n>=1 and linear phase.
+   Strategy: one IBP with u = ln(x), dv = x^n * trig(a*x+b) dx.
+   Then ∫ = ln(x)*V  -  ∫ (V/x) dx, where V = ∫ x^n * trig(a*x+b) dx
+   and the tail lowers polynomial degree, terminating via existing handlers. */
+static pcas_ast_t *integrate_poly_log_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    bool saw_ln = false;
+    int n = -1;
+    bool saw_trig = false;
+
+    /* Scan: need exactly one ln(x), one trig(sin|cos)(depends on var), and x^n (n>=1). Others must be numeric constants. */
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        if (ch->type == NODE_NUMBER) continue;
+
+        if (!saw_ln && is_op(ch, OP_LOG) && is_ln_of_var_either_node(ch, var)) {
+            saw_ln = true;
+            continue;
+        }
+
+        if (n < 0) {
+            int deg;
+            if (read_poly_power_of_var(ch, var, &deg)) { n = deg; continue; }
+        }
+
+        if (!saw_trig && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) {
+            pcas_ast_t *arg = ast_ChildGet(ch, 0);
+            if (arg && depends_on_var(arg, var)) { saw_trig = true; continue; }
+        }
+
+        /* Anything else that depends on var => not our pattern */
+        if (!is_const_wrt(ch, var)) return NULL;
+    }
+
+    if (!(saw_ln && saw_trig && n >= 1)) return NULL;
+
+    /* Build dv = expr / ln(x): copy product but skip exactly one ln(x) factor */
+    pcas_ast_t *dv_prod = ast_MakeNumber(num_FromInt(1));
+    bool ln_removed = false;
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        if (!ln_removed && is_op(ch, OP_LOG) && is_ln_of_var_either_node(ch, var)) {
+            ln_removed = true;
+            continue;
+        }
+        dv_prod = ast_MakeBinary(OP_MULT, dv_prod, ast_Copy(ch));
+    }
+    simp(dv_prod);
+    if (!ln_removed) { ast_Cleanup(dv_prod); return NULL; }
+
+    /* V = ∫ x^n * trig(a*x+b) dx via the closed-form handler (no recursion loops) */
+    pcas_ast_t *V = integrate_xn_times_trig_linear(dv_prod, var);
+    ast_Cleanup(dv_prod);
+    if (!V) return NULL;
+
+    /* term1 = ln(x) * V (normalize ln as unary LOG(x)) */
+    pcas_ast_t *lnx   = ast_MakeUnary(OP_LOG, ast_Copy(var));
+    pcas_ast_t *term1 = ast_MakeBinary(OP_MULT, lnx, ast_Copy(V));
+
+    /* tail = ∫ (V/x) dx */
+    pcas_ast_t *V_over_x = ast_MakeBinary(OP_DIV, V, ast_Copy(var));
+    simp(V_over_x);
+    pcas_ast_t *tail = integrate_node(V_over_x, var);
+    if (!tail) { ast_Cleanup(term1); return NULL; }
+
+    /* result = term1 - tail  => term1 + (-1)*tail */
+    pcas_ast_t *res = ast_MakeBinary(OP_ADD, term1,
+                       ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), tail));
+    simp(res);
+    return res;
+}
+
+
+/* Product integrator: prefer finite/closed-form handlers first to avoid IBP loops. */
 static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
-    /* Short-circuit common trig×trig to avoid recursion crashes */
-    pcas_ast_t *sp = integrate_special_trig_product(expr, var);
-    if (sp) return sp;
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
 
-    /* Targeted poly×(sin|cos) IBP */
+    /* --- DEBUG-SAFE fast path: exactly x^n * sin(x) or x^n * cos(x) --- */
+    {
+        int deg = -1;
+        pcas_ast_t *the_trig = NULL;
+        bool bad = false;
+
+        for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch = ch->next) {
+            if (ch->type == NODE_NUMBER || is_const_wrt(ch, var)) continue;
+
+            if (!the_trig && (isoptype(ch, OP_SIN) || isoptype(ch, OP_COS))) {
+                pcas_ast_t *a = ast_ChildGet(ch, 0);
+                if (a && depends_on_var(a, var)) { the_trig = ch; continue; }
+            }
+
+            if (deg < 0) {
+                int dtmp;
+                if (read_poly_power_of_var(ch, var, &dtmp)) { deg = dtmp; continue; }
+            }
+
+            bad = true; break;
+        }
+
+        if (!bad && the_trig && deg >= 0) {
+            pcas_ast_t *special = integrate_xn_times_trig_linear(expr, var);
+            if (special) return special;
+        }
+    }
+
+    /* 0) Very common trig×trig shortcuts */
+    {
+        pcas_ast_t *sp = integrate_special_trig_product(expr, var);
+        if (sp) return sp;
+    }
+
+    /* 1) sin^2 / cos^2 / tan^2 with linear phase → closed form (non-recursive) */
+    {
+        pcas_ast_t *sq = rewrite_trig_square_in_product_and_integrate(expr, var);
+        if (sq) return sq;
+    }
+
+    /* 2) Pure poly×log: x^n (ln x)^m */
+    {
+        pcas_ast_t *pl = integrate_poly_times_log(expr, var);
+        if (pl) return pl;
+    }
+
+    /* 3) Poly×trig (linear phase): x^n sin(ax+b) or x^n cos(ax+b) */
+    {
+        pcas_ast_t *pt = integrate_xn_times_trig_linear(expr, var);
+        if (pt) return pt;
+    }
+
+    /* 4) Poly×log×trig (linear) */
+    {
+        pcas_ast_t *plt = integrate_poly_log_times_trig_linear(expr, var);
+        if (plt) return plt;
+    }
+
+    /* 5) One-step IBP for poly×(sin|cos) (depth guarded) */
     if (s_ibp_enabled) {
         pcas_ast_t *t = ibp_poly_trig_once(expr, var);
         if (t) return t;
     }
 
-    /* If remaining non-constant factors are all trig and >1, skip (avoid loops) */
-    int nonconst_count = 0, trig_like_count = 0;
-    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
-        if (!is_const_wrt(ch, var)) {
-            nonconst_count++;
-            if (is_op(ch, OP_SIN) || is_op(ch, OP_COS) || is_tan_of_var(ch,var) ||
-                is_sec_of_var(ch,var) || is_csc_of_var(ch,var) || is_cot_of_var(ch,var)) {
-                trig_like_count++;
+    /* 6) Trig-only >1 factor? skip to avoid loops. */
+    {
+        int nonconst = 0, triglike = 0;
+        for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+            if (!is_const_wrt(ch, var)) {
+                nonconst++;
+                if (isoptype(ch, OP_SIN) || isoptype(ch, OP_COS) ||
+                    is_tan_of_var(ch,var) || is_sec_of_var(ch,var) ||
+                    is_csc_of_var(ch,var) || is_cot_of_var(ch,var))
+                    triglike++;
             }
         }
-    }
-    if (nonconst_count >= 2 && trig_like_count == nonconst_count) {
-        return NULL; /* let higher-level trig identities handle */
+        if (nonconst >= 2 && triglike == nonconst) return NULL;
     }
 
-    /* Constant factor extraction (c * f(x) -> c * ∫ f(x) dx) */
+    /* 7) Constant-factor extraction → recurse */
     pcas_ast_t *const_factor = N(1);
     pcas_ast_t *rest_factor  = N(1);
     for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
@@ -1527,8 +2515,12 @@ static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
     }
 
     ast_Cleanup(const_factor);
+    ast_Cleanup(rest_factor);
     return NULL;
 }
+
+
+
 
 
 /* === NEW: gather sqrt(Q) in numerator and constant factor (defaults to 1) === */
