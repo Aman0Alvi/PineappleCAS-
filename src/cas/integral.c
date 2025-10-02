@@ -2374,6 +2374,72 @@ static bool is_poly_times_tan_linear(pcas_ast_t *expr, pcas_ast_t *var) {
     return (n >= 1) && (one_tan != NULL);
 }
 
+/* ∫ dx / ( k * x^2 * sqrt(α x^2 - β^2) )
+   Matches radicand of the form α x^2 + b x + c with b=0, α>0, c<0 (so √(α x^2 - β^2), β^2 = -c).
+   Returns  (1/k) * sqrt(α x^2 - β^2) / (β^2 x).
+*/
+static pcas_ast_t *integrate_recip_x2_times_quadratic_root(pcas_ast_t *den, pcas_ast_t *var) {
+    if (!den || !var) return NULL;
+
+    /* Expect den = k * x^2 * sqrt(Q)   (k may be 1) */
+    mp_rat k = num_FromInt(1);
+    bool saw_x2 = false;
+    pcas_ast_t *root_like = NULL;
+
+    if (is_op(den, OP_MULT)) {
+        for (pcas_ast_t *ch = ast_ChildGet(den,0); ch; ch = ch->next) {
+            if (!saw_x2 && is_op(ch, OP_POW)) {
+                pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+                if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                    e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num,2,1)==0) {
+                    saw_x2 = true; continue;
+                }
+            }
+            if (!root_like && is_sqrt_like(ch)) { root_like = ch; continue; }
+            if (ch->type == NODE_NUMBER) { mp_rat_mul(k, ch->op.num, k); continue; }
+            if (!is_const_wrt(ch, var)) { num_Cleanup(k); return NULL; }
+        }
+    } else {
+        /* Allow exactly x^2 * sqrt(Q) (i.e., k==1) */
+        if (is_op(den, OP_MULT)) { /* (handled above) */ }
+        else { num_Cleanup(k); return NULL; }
+    }
+
+    if (!saw_x2 || !root_like) { num_Cleanup(k); return NULL; }
+
+    /* Grab the radicand Q(x) */
+    pcas_ast_t *Q = NULL;
+    if (!extract_radicand(root_like, &Q) || !Q) { num_Cleanup(k); return NULL; }
+
+    /* Read α, b, c from Q(x) = α x^2 + b x + c */
+    mp_rat a=NULL, b=NULL, c=NULL;
+    if (!read_quadratic_coeffs_general(Q, var, &a, &b, &c)) { num_Cleanup(k); return NULL; }
+
+    /* Require b == 0, a > 0, c < 0  =>  Q = α x^2 - β^2 with β^2 = -c */
+    if (mp_rat_compare_zero(b) != 0 || mp_rat_compare_zero(a) <= 0 || mp_rat_compare_zero(c) >= 0) {
+        num_Cleanup(a); num_Cleanup(b); num_Cleanup(c); num_Cleanup(k);
+        return NULL;
+    }
+
+    /* β^2 = -c  */
+    mp_rat beta2 = num_FromInt(0); mp_rat_sub(num_FromInt(0), c, beta2);
+
+    /* Build sqrt(Q)/(β^2 * x) and apply 1/k front */
+    pcas_ast_t *sqrtQ = ast_MakeBinary(OP_ROOT, N(2), ast_Copy(Q));
+    pcas_ast_t *beta2_ast = ast_MakeNumber(num_Copy(beta2));
+    pcas_ast_t *den_x = ast_MakeBinary(OP_MULT, beta2_ast, ast_Copy(var));
+    pcas_ast_t *core = ast_MakeBinary(OP_DIV, sqrtQ, den_x);
+
+    pcas_ast_t *res = core;
+    if (mp_rat_compare_value(k,1,1) != 0) {
+        mp_rat invk = num_FromInt(1); mp_rat_div(invk, k, invk);
+        res = ast_MakeBinary(OP_MULT, ast_MakeNumber(invk), core);
+    }
+    simp(res);
+
+    num_Cleanup(a); num_Cleanup(b); num_Cleanup(c); num_Cleanup(beta2); num_Cleanup(k);
+    return res;
+}
 /* ∫ (const) * x^n * (sin^2|cos^2)(u) dx,  n>=0,  u = a*x + b with a≠0.
    Closed form without recursion. Expands result at the end.
    Return NULL if pattern not matched. */
@@ -2914,8 +2980,11 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
     if (expr->type == NODE_SYMBOL) {
         if (ast_Compare(expr, var)) {
             /* ∫ x dx = x^2/2 */
-            pcas_ast_t *res = ast_MakeBinary(OP_DIV,
-                ast_MakeBinary(OP_POW, ast_Copy(var), N(2)), N(2));
+            pcas_ast_t *res = ast_MakeBinary(
+                OP_DIV,
+                ast_MakeBinary(OP_POW, ast_Copy(var), N(2)),
+                N(2)
+            );
             simp(res);
             return res;
         } else {
@@ -2935,35 +3004,43 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
         return integrate_sum(expr, var);
     }
 
-    /* Products: special trig products first, then targeted IBP and constant-factor extraction */
+    /* Products: special trig products first, then targeted handlers and constant-factor extraction */
     if (op == OP_MULT) {
-        /* NEW: front-door for x^n * (sin|cos)(linear) — mirror the ln(x) fast path */
+        /* sin^m x cos^n x (m odd or n odd) */
         {
-            pcas_ast_t *pt_front = integrate_poly_trig_frontdoor(expr, var);
-            if (pt_front) return pt_front;
+            pcas_ast_t *sp1 = integrate_sin_cos_product(expr, var);
+            if (sp1) return sp1;
         }
 
-        /* sin^m x cos^n x (m odd or n odd) */
-        pcas_ast_t *sp1 = integrate_sin_cos_product(expr, var);
-        if (sp1) return sp1;
-
         /* tan^m x sec^n x (n even; plus n odd & m even) */
-        pcas_ast_t *sp2 = integrate_tan_sec_product(expr, var);
-        if (sp2) return sp2;
+        {
+            pcas_ast_t *sp2 = integrate_tan_sec_product(expr, var);
+            if (sp2) return sp2;
+        }
 
+        /* Closed-form: c*x*trig^2(u) with u linear (no recursion) */
+        {
+            pcas_ast_t *sq = rewrite_trig_square_in_product_and_integrate(expr, var);
+            if (sq) return sq;
+        }
+
+        /* General product dispatcher (includes x^n * sin/cos linear-phase finite sum,
+           x^n*(ln x)^m, poly*log*trig, and a guarded one-step IBP) */
         return integrate_product(expr, var);
     }
 
-    /* Powers: x^n rule, e^(a x) rule, sec^2/csc^2, tan^2, etc. */
+    /* Powers: x^n rule, e^(a x) rule, sec^2/csc^2, tan^2, and sin^n/cos^n reductions */
     if (op == OP_POW)  {
         pcas_ast_t *r = integrate_power(expr, var);
         if (r) return r;
 
         /* Reduction formulas for sin^n x and cos^n x */
-        pcas_ast_t *r2 = integrate_sin_power_node(expr, var);
-        if (r2) return r2;
-        pcas_ast_t *r3 = integrate_cos_power_node(expr, var);
-        if (r3) return r3;
+        {
+            pcas_ast_t *r2 = integrate_sin_power_node(expr, var);
+            if (r2) return r2;
+            pcas_ast_t *r3 = integrate_cos_power_node(expr, var);
+            if (r3) return r3;
+        }
     }
 
     /* Trig singletons with arg==var */
@@ -2972,12 +3049,16 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
         if (arg && arg->type == NODE_SYMBOL && ast_Compare(arg, var)) {
             pcas_ast_t *res = NULL;
             switch (op) {
-                case OP_SIN: res = int_sin_of(ast_Copy(arg)); break;  /* -cos x */
-                case OP_COS: res = int_cos_of(ast_Copy(arg)); break;  /*  sin x */
-                case OP_TAN:
-                    /* ∫ tan x dx = -ln|cos x|  (represent as -ln(cos x)) */
-                    res = ast_MakeBinary(OP_MULT, N(-1),
-                          ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(arg))));
+                case OP_SIN: /* ∫ sin x dx = -cos x */
+                    res = int_sin_of(ast_Copy(arg));
+                    break;
+                case OP_COS: /* ∫ cos x dx =  sin x */
+                    res = int_cos_of(ast_Copy(arg));
+                    break;
+                case OP_TAN: /* ∫ tan x dx = -ln|cos x|  (build -ln(cos x)) */
+                    res = ast_MakeBinary(
+                              OP_MULT, N(-1),
+                              ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(arg))));
                     break;
                 default: break;
             }
@@ -3006,7 +3087,7 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
         }
     }
 
-    /* sec, csc, cot singletons by pattern */
+    /* sec, csc, cot singletons by pattern (expressed via sin/cos/div/pow forms) */
     if (is_sec_of_var(expr, var)) {
         /* ∫ sec x dx = ln(sec x + tan x) */
         pcas_ast_t *sec = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_COS, ast_Copy(var)));
@@ -3017,7 +3098,7 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
         return res;
     }
     if (is_csc_of_var(expr, var)) {
-        /* ∫ csc x dx = ln(csc x - cot x) = ln( 1/sin - cos/sin ) */
+        /* ∫ csc x dx = ln(csc x - cot x) */
         pcas_ast_t *csc = ast_MakeBinary(OP_DIV, N(1), ast_MakeUnary(OP_SIN, ast_Copy(var)));
         pcas_ast_t *cot = ast_MakeBinary(OP_DIV, ast_MakeUnary(OP_COS, ast_Copy(var)),
                                          ast_MakeUnary(OP_SIN, ast_Copy(var)));
@@ -3036,6 +3117,12 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
     /* Quadratic-under-root and related quotient patterns */
     if (op == OP_DIV) {
         pcas_ast_t *num = ast_ChildGet(expr,0), *den = ast_ChildGet(expr,1);
+
+        /* NEW: 1 / (k * x^2 * sqrt(α x^2 - β^2)) */
+        if (num && num->type==NODE_NUMBER && mp_rat_compare_value(num->op.num,1,1)==0) {
+            pcas_ast_t *spx2 = integrate_recip_x2_times_quadratic_root(den, var);
+            if (spx2) return spx2;
+        }
 
         /* sqrt(Q(x))/x with Q(x)=x^2 - A^2 (and numeric factors handled inside) */
         {
@@ -3112,18 +3199,18 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
         }
     }
 
-    /* Direct forms:  Q(x)^(-1/2)  → 1/sqrt(Q) handler;  Q(x)^(-1) → rational quadratic handler */
+    /* Direct forms from powers/roots wrappers */
     if (op == OP_POW || op == OP_ROOT) {
         if (is_op(expr, OP_POW)) {
             pcas_ast_t *B = ast_ChildGet(expr,0), *E = ast_ChildGet(expr,1);
             if (E && E->type==NODE_NUMBER) {
-                /* exponent = -1/2 */
+                /* exponent = -1/2 → 1/sqrt(Q) handler */
                 if (mp_rat_compare_value(E->op.num, -1, 2)==0) {
                     pcas_ast_t *qrt = integrate_quadratic_root(
                         ast_MakeBinary(OP_ROOT, N(2), ast_Copy(B)), var);
                     if (qrt) return qrt;
                 }
-                /* exponent = -1  → 1/(quadratic) */
+                /* exponent = -1  → 1/(quadratic) handler */
                 if (mp_rat_compare_value(E->op.num, -1, 1)==0) {
                     pcas_ast_t *rq = integrate_recip_quadratic_poly(B, var);
                     if (rq) return rq;
