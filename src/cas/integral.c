@@ -17,6 +17,7 @@ void integral_set_ibp_enabled(bool on) { s_ibp_enabled = on; }
 static int  s_ibp_depth = 0;
 static const int S_IBP_MAX_DEPTH = 8;
 
+
 /* ---------------- Small helpers ---------------- */
 static pcas_ast_t *integrate_poly_log_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var);
 
@@ -631,6 +632,7 @@ static pcas_ast_t *integrate_cos_power_node(pcas_ast_t *pow, pcas_ast_t *var) {
     num_Cleanup(nrat);
     return res;
 }
+
 /* Build F(u) = Σ c_j * u^{p_j}, return its antiderivative Σ c_j/(p_j+1) * u^{p_j+1}.
    u_sym is a *callable* that returns cos(x) or sin(x) AST when passed var. */
 static pcas_ast_t *poly_u_antiderivative_and_substitute(
@@ -644,13 +646,16 @@ static pcas_ast_t *poly_u_antiderivative_and_substitute(
     pcas_ast_t *sum = N(0);
     for (int j = 0; j <= k; ++j) {
         mp_rat C = mp_binom_int(k, j);
-        if (!plus && (j & 1)) { mp_rat_neg(C, C); } /* (−1)^j */
-        int p = base_pow + 2*j;                     /* u^{base_pow} * u^{2j} */
+        if (!plus && (j & 1)) { mp_rat_neg(C, C); }           /* (−1)^j */
+        int p = base_pow + 2*j;                                /* u^{base_pow} * u^{2j} */
         mp_rat inv = num_FromInt(p+1); mp_rat_recip(inv, inv); /* 1/(p+1) */
         mp_rat coeff = num_FromInt(0); mp_rat_mul(C, inv, coeff);
 
         pcas_ast_t *u = u_of_x(var);
-        pcas_ast_t *u_pow = (p==0) ? N(1) : ast_MakeBinary(OP_POW, u, N(p+1)); /* antiderivative power p+1 */
+        /* FIX: when p==0, antiderivative must be u^(p+1) = u (not 1) */
+        pcas_ast_t *u_pow = (p == 0)
+            ? u
+            : ast_MakeBinary(OP_POW, u, N(p+1));
 
         pcas_ast_t *term = ast_MakeBinary(OP_MULT, ast_MakeNumber(coeff), u_pow);
         sum = ast_MakeBinary(OP_ADD, sum, term);
@@ -1593,7 +1598,6 @@ static pcas_ast_t *integrate_quadratic_root(pcas_ast_t *root_like, pcas_ast_t *v
 }
 
 /* ---------------- IBP: poly(x) * (sin|cos)(x)  (1 step; recursion guarded) ---------------- */
-
 static pcas_ast_t *ibp_poly_trig_once(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!expr || !is_op(expr, OP_MULT)) return NULL;
 
@@ -1611,7 +1615,7 @@ static pcas_ast_t *ibp_poly_trig_once(pcas_ast_t *expr, pcas_ast_t *var) {
                 poly = ch; poly_pow = expo; picked = true;
             }
         }
-        if (!picked && !poly && is_var_deg1(ch, var)) {
+        if (!picked && !poly && (ch->type == NODE_SYMBOL && ast_Compare(ch, var))) {
             poly = ch; poly_pow = NULL; picked = true;
         }
 
@@ -1632,10 +1636,12 @@ static pcas_ast_t *ibp_poly_trig_once(pcas_ast_t *expr, pcas_ast_t *var) {
 
     int n = 1;
     if (poly_pow) {
-        char *nstr = num_ToString(poly_pow->op.num, 24);
-        n = (int)strtol(nstr, NULL, 10);
-        free(nstr);
-        if (n < 1) { ast_Cleanup(const_factor); return NULL; }
+        mp_small num, den;
+        if (mp_rat_to_ints(poly_pow->op.num, &num, &den) != MP_OK || den != 1 || num < 1) {
+            ast_Cleanup(const_factor);
+            return NULL;
+        }
+        n = (int)num;
     }
 
     pcas_ast_t *u = ast_Copy(poly);
@@ -1753,7 +1759,8 @@ static bool read_poly_power_of_var(pcas_ast_t *node, pcas_ast_t *var, int *deg_o
         return true;
     }
 
-    if (isoptype(node, OP_POW)) {
+    /* FIX: use is_op(...) here (not isoptype) */
+    if (is_op(node, OP_POW)) {
         pcas_ast_t *b = ast_ChildGet(node,0), *e = ast_ChildGet(node,1);
         if (b && b->type == NODE_SYMBOL && ast_Compare(b, var) &&
             e && e->type == NODE_NUMBER) {
@@ -1766,7 +1773,6 @@ static bool read_poly_power_of_var(pcas_ast_t *node, pcas_ast_t *var, int *deg_o
     }
     return false;
 }
-
 
 /* ∫ x^n ln x dx = (x^{n+1}/(n+1)) ln x - x^{n+1}/(n+1)^2, n>=0 */
 static pcas_ast_t *integrate_xn_lnx_product(pcas_ast_t *expr, pcas_ast_t *var) {
@@ -2205,6 +2211,7 @@ static pcas_ast_t *rewrite_trig_square_in_product_and_integrate(pcas_ast_t *expr
     return result;
 }
 
+
 /* DIRECT closed-form for ∫ x^n * (sin|cos)(u) dx, n>=0, u = a*var + b with a!=0.
    Pattern-match a single trig(u) factor and accumulate total degree of x across factors.
    Uses the finite sum from the e^{i(ax+b)} derivation.
@@ -2225,8 +2232,8 @@ static pcas_ast_t *integrate_xn_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *
         if (is_op(ch, OP_POW)) {
             pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
             if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER) {
-                mp_small num, den;
-                if (mp_rat_to_ints(e->op.num,&num,&den)==MP_OK && den==1 && num>=1) { n += (int)num; continue; }
+                mp_small numi, deni;
+                if (mp_rat_to_ints(e->op.num,&numi,&deni)==MP_OK && deni==1 && numi>=1) { n += (int)numi; continue; }
             }
         }
 
@@ -2312,17 +2319,23 @@ static pcas_ast_t *integrate_xn_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *
         }
     }
 
+    /* Combine into Ps*sin(u) + Pc*cos(u) */
     pcas_ast_t *res = ast_MakeBinary(
         OP_ADD,
         ast_MakeBinary(OP_MULT, Ps, sin_u),
         ast_MakeBinary(OP_MULT, Pc, cos_u)
     );
 
+    /* Apply numeric factor c if needed */
     if (mp_rat_compare_value(c,1,1)!=0) {
         res = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), res);
     }
+
+    /* Expand (distribute) and then simplify */
+    expand(res, EXP_DISTRIB_NUMBERS | EXP_DISTRIB_MULTIPLICATION | EXP_DISTRIB_ADDITION);
     simp(res);
 
+    /* cleanup */
     num_Cleanup(c);
     num_Cleanup(a);
     num_Cleanup(inva);
@@ -2332,6 +2345,223 @@ static pcas_ast_t *integrate_xn_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *
     return res;
 }
 
+/* helper: detect x^n * tan(linear) with n>=1 */
+static bool is_poly_times_tan_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!is_op(expr, OP_MULT)) return false;
+
+    int n = 0;
+    pcas_ast_t *one_tan = NULL;
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (ch->type == NODE_NUMBER) continue;
+
+        if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) { n += 1; continue; }
+        if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER) {
+                mp_small numi, deni;
+                if (mp_rat_to_ints(e->op.num,&numi,&deni)==MP_OK && deni==1 && numi>=1) { n += (int)numi; continue; }
+            }
+        }
+        if (!one_tan && is_op(ch, OP_TAN)) {
+            pcas_ast_t *u = ast_ChildGet(ch,0);
+            if (u && depends_on_var(u, var)) one_tan = ch;
+            continue;
+        }
+
+        if (!is_const_wrt(ch, var)) return false;
+    }
+    return (n >= 1) && (one_tan != NULL);
+}
+
+/* ∫ (const) * x^n * (sin^2|cos^2)(u) dx,  n>=0,  u = a*x + b with a≠0.
+   Closed form without recursion. Expands result at the end.
+   Return NULL if pattern not matched. */
+static pcas_ast_t *integrate_xn_times_trig_square_linear(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    /* Parse product: collect numeric const c, degree n, and exactly one (sin|cos)^2(u). */
+    mp_rat c = num_FromInt(1);
+    int n = 0;
+    pcas_ast_t *trig_pow2 = NULL;      /* node: POW( SIN/ COS (u) , 2 ) */
+    OperatorType trig_kind = (OperatorType)0; /* OP_SIN or OP_COS */
+    pcas_ast_t *u = NULL;
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+
+        /* x or x^k */
+        if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) { n += 1; continue; }
+        if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER) {
+                mp_small numi, deni;
+                if (mp_rat_to_ints(e->op.num, &numi, &deni)==MP_OK && deni==1 && numi>=1) {
+                    n += (int)numi; continue;
+                }
+            }
+        }
+
+        /* (sin|cos)^2(u) */
+        if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && (is_op(b, OP_SIN) || is_op(b, OP_COS)) &&
+                e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num, 2, 1)==0) {
+
+                pcas_ast_t *arg = ast_ChildGet(b,0);
+                if (arg && depends_on_var(arg, var)) {
+                    if (trig_pow2) { num_Cleanup(c); return NULL; } /* more than one */
+                    trig_pow2 = ch;
+                    trig_kind = optype(b);
+                    u = arg;
+                    continue;
+                }
+            }
+        }
+
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+
+    if (!trig_pow2 || !u || n < 0) { num_Cleanup(c); return NULL; }
+
+    /* u must be linear in var: u = a*x + b (a ≠ 0) */
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) { num_Cleanup(c); return NULL; }
+    if (!a_node || a_node->type!=NODE_NUMBER || mp_rat_compare_zero(a_node->op.num)==0) {
+        if (a_node) ast_Cleanup(a_node);
+        num_Cleanup(c);
+        return NULL;
+    }
+    mp_rat a = num_Copy(a_node->op.num);
+    ast_Cleanup(a_node);
+
+    /* Helper: make x^k */
+    pcas_ast_t *x_pow_k = NULL;
+    #define MAKE_X_POW(k) ( (k)==0 ? N(1) : ((k)==1 ? ast_Copy(var) : ast_MakeBinary(OP_POW, ast_Copy(var), N(k))) )
+
+    /* Build cos(2u) and sin(2u) with distinct 2u nodes to avoid aliasing */
+    pcas_ast_t *two_u_for_cos = ast_MakeBinary(OP_MULT, N(2), ast_Copy(u));
+    pcas_ast_t *two_u_for_sin = ast_MakeBinary(OP_MULT, N(2), ast_Copy(u));
+    pcas_ast_t *cos_2u = ast_MakeUnary(OP_COS, two_u_for_cos);
+    pcas_ast_t *sin_2u = ast_MakeUnary(OP_SIN, two_u_for_sin);
+
+    /* Part A: (c/2) * ∫ x^n dx = (c/2) * x^{n+1}/(n+1) */
+    mp_rat c_over_2 = num_Copy(c); mp_rat_div(c_over_2, num_FromInt(2), c_over_2);
+    x_pow_k = MAKE_X_POW(n+1);
+    pcas_ast_t *partA = ast_MakeBinary(OP_MULT,
+                        ast_MakeNumber(num_Copy(c_over_2)),
+                        ast_MakeBinary(OP_DIV, x_pow_k, N(n+1)));
+    simp(partA);
+
+    /* Part B: ± (c/2) * ∫ x^n * cos(2u) dx  ( + for cos^2, − for sin^2 ) */
+    pcas_ast_t *partB = NULL;
+    {
+        /* Build product fresh for the trusted finite-sum integrator */
+        pcas_ast_t *prod = ast_MakeBinary(OP_MULT, MAKE_X_POW(n), ast_Copy(cos_2u));
+        pcas_ast_t *Int  = integrate_xn_times_trig_linear(prod, var);
+        ast_Cleanup(prod);
+        if (!Int) Int = N(0); /* safety */
+
+        pcas_ast_t *coef = ast_MakeNumber(num_Copy(c_over_2));
+        if (trig_kind == OP_SIN) {
+            coef = ast_MakeBinary(OP_MULT, N(-1), coef); /* minus for sin^2 */
+        }
+        partB = ast_MakeBinary(OP_MULT, coef, Int);
+        simp(partB);
+    }
+
+    /* Result */
+    pcas_ast_t *res = ast_MakeBinary(OP_ADD, partA, partB);
+    simp(res);
+
+    /* Expand nicely */
+    expand(res, EXP_DISTRIB_NUMBERS | EXP_DISTRIB_MULTIPLICATION | EXP_DISTRIB_ADDITION);
+    simp(res);
+
+    /* cleanup */
+    num_Cleanup(c);
+    num_Cleanup(a);
+    num_Cleanup(c_over_2);
+    ast_Cleanup(sin_2u);
+    ast_Cleanup(cos_2u);
+
+    return res;
+
+    #undef MAKE_X_POW
+}
+/* OPTIONAL: one IBP for x^n * tan(u), u = a*var + b, a!=0
+   u' = a.  ∫ x^n tan(u) dx = -(x^n/a) ln(cos u) + (n/a) ∫ x^{n-1} ln(cos u) dx
+   This lowers the poly degree and avoids recursion depth loops. */
+static pcas_ast_t *ibp_poly_times_tan_linear_once(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    int n = 0;
+    pcas_ast_t *tan_u = NULL, *u = NULL;
+    mp_rat c = num_FromInt(1);
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
+        if (ch->type == NODE_NUMBER) { mp_rat_mul(c, ch->op.num, c); continue; }
+        if (!tan_u && is_op(ch, OP_TAN)) {
+            pcas_ast_t *arg = ast_ChildGet(ch,0);
+            if (arg && depends_on_var(arg, var)) { tan_u = ch; u = arg; continue; }
+        }
+        if (ch->type == NODE_SYMBOL && ast_Compare(ch, var)) { n += 1; continue; }
+        if (is_op(ch, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER) {
+                mp_small num, den;
+                if (mp_rat_to_ints(e->op.num,&num,&den)==MP_OK && den==1 && num>=1) { n += (int)num; continue; }
+            }
+        }
+        if (!is_const_wrt(ch, var)) { num_Cleanup(c); return NULL; }
+    }
+    if (!tan_u) { num_Cleanup(c); return NULL; }
+
+    /* u linear? */
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) { num_Cleanup(c); return NULL; }
+    if (!a_node || a_node->type!=NODE_NUMBER || mp_rat_compare_zero(a_node->op.num)==0) {
+        if (a_node) ast_Cleanup(a_node);
+        num_Cleanup(c);
+        return NULL;
+    }
+    mp_rat a = num_Copy(a_node->op.num);
+    ast_Cleanup(a_node);
+
+    /* -(x^n/a) ln(cos u) */
+    pcas_ast_t *xpow = (n==0) ? N(1) : ast_MakeBinary(OP_POW, ast_Copy(var), N(n));
+    pcas_ast_t *lncos = ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(u)));
+    mp_rat inva = num_FromInt(1); mp_rat_div(inva, a, inva);
+    pcas_ast_t *lead = ast_MakeBinary(OP_MULT,
+                         ast_MakeNumber(inva),
+                         ast_MakeBinary(OP_MULT, ast_MakeBinary(OP_MULT, N(-1), xpow), lncos));
+    simp(lead);
+
+    /* +(n/a) ∫ x^{n-1} ln(cos u) dx  (leave to general integrator) */
+    pcas_ast_t *tail = NULL;
+    if (n >= 1) {
+        pcas_ast_t *xpowm1 = (n==1) ? ast_Copy(var) : ast_MakeBinary(OP_POW, ast_Copy(var), N(n-1));
+        pcas_ast_t *lncos2  = ast_MakeUnary(OP_LOG, ast_MakeUnary(OP_COS, ast_Copy(u)));
+        pcas_ast_t *prod    = ast_MakeBinary(OP_MULT, xpowm1, lncos2);
+        pcas_ast_t *I       = integrate_node(prod, var);
+        if (!I) { ast_Cleanup(lead); num_Cleanup(a); num_Cleanup(c); return NULL; }
+        mp_rat n_over_a = num_FromInt(n); mp_rat_div(n_over_a, a, n_over_a);
+        tail = ast_MakeBinary(OP_MULT, ast_MakeNumber(n_over_a), I);
+        simp(tail);
+    } else {
+        tail = N(0);
+    }
+
+    pcas_ast_t *sum = ast_MakeBinary(OP_ADD, lead, tail);
+    if (mp_rat_compare_value(c,1,1)!=0) {
+        sum = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), sum);
+        simp(sum);
+    }
+
+    num_Cleanup(a);
+    num_Cleanup(c);
+    return sum;
+}
 
 /* ∫ x^n ln(x) * (sin|cos)(a*x + b) dx, with n>=1 and linear phase.
    Strategy: one IBP with u = ln(x), dv = x^n * trig(a*x+b) dx.
@@ -2405,6 +2635,7 @@ static pcas_ast_t *integrate_poly_log_times_trig_linear(pcas_ast_t *expr, pcas_a
 }
 
 
+
 /* Product integrator: prefer finite/closed-form handlers first to avoid IBP loops. */
 static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!expr || !is_op(expr, OP_MULT)) return NULL;
@@ -2437,43 +2668,50 @@ static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
         }
     }
 
-    /* 0) Very common trig×trig shortcuts */
+    /* 0) Very common trig×trig shortcuts (sin·cos, sec·tan, csc·cot). */
     {
         pcas_ast_t *sp = integrate_special_trig_product(expr, var);
         if (sp) return sp;
     }
 
-    /* 1) sin^2 / cos^2 / tan^2 with linear phase → closed form (non-recursive) */
+    /* 0.5) x^n * (sin^2|cos^2)(a x + b), a!=0  (closed-form; NO expand) */
     {
-        pcas_ast_t *sq = rewrite_trig_square_in_product_and_integrate(expr, var);
+        pcas_ast_t *sq = integrate_xn_times_trig_square_linear(expr, var);
         if (sq) return sq;
     }
 
-    /* 2) Pure poly×log: x^n (ln x)^m */
+    /* 1) Pure poly×log: x^n (ln x)^m */
     {
         pcas_ast_t *pl = integrate_poly_times_log(expr, var);
         if (pl) return pl;
     }
 
-    /* 3) Poly×trig (linear phase): x^n sin(ax+b) or x^n cos(ax+b) */
+    /* 2) Poly×trig (linear phase): x^n sin(ax+b) or x^n cos(ax+b) — finite sum */
     {
         pcas_ast_t *pt = integrate_xn_times_trig_linear(expr, var);
         if (pt) return pt;
     }
 
-    /* 4) Poly×log×trig (linear) */
+    /* 3) Poly×log×trig (linear) — one-shot IBP around ln(x) with finite-sum core */
     {
         pcas_ast_t *plt = integrate_poly_log_times_trig_linear(expr, var);
         if (plt) return plt;
     }
 
-    /* 5) One-step IBP for poly×(sin|cos) (depth guarded) */
+    /* 4) One-step IBP for poly×(sin|cos) (depth guarded) */
     if (s_ibp_enabled) {
         pcas_ast_t *t = ibp_poly_trig_once(expr, var);
         if (t) return t;
     }
 
-    /* 6) Trig-only >1 factor? skip to avoid loops. */
+    /* 4.5) OPTIONAL: one-step IBP for x^n * tan(a x + b) to avoid “no-op”.
+            Comment this block out if you prefer to leave tan products unsupported. */
+    if (s_ibp_enabled) {
+        pcas_ast_t *tt = ibp_poly_times_tan_linear_once(expr, var);
+        if (tt) return tt;
+    }
+
+    /* 5) Trig-only >1 factor? skip to avoid loops. */
     {
         int nonconst = 0, triglike = 0;
         for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch=ch->next) {
@@ -2488,7 +2726,7 @@ static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
         if (nonconst >= 2 && triglike == nonconst) return NULL;
     }
 
-    /* 7) Constant-factor extraction → recurse */
+    /* 6) Constant-factor extraction → recurse on the var-dependent rest. */
     pcas_ast_t *const_factor = N(1);
     pcas_ast_t *rest_factor  = N(1);
     for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
@@ -2518,9 +2756,6 @@ static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
     ast_Cleanup(rest_factor);
     return NULL;
 }
-
-
-
 
 
 /* === NEW: gather sqrt(Q) in numerator and constant factor (defaults to 1) === */
@@ -2622,6 +2857,47 @@ static pcas_ast_t *integrate_root_over_x(pcas_ast_t *num, pcas_ast_t *den, pcas_
     return result;
 }
 
+/* Front-door catch-all for (const)*x^n*(sin|cos)(u) with u linear in var.
+   Returns a finite, non-recursive closed form or NULL if not matched. */
+static pcas_ast_t *integrate_poly_trig_frontdoor(pcas_ast_t *expr, pcas_ast_t *var) {
+    if (!expr || !is_op(expr, OP_MULT)) return NULL;
+
+    int n = 0;
+    pcas_ast_t *trig = NULL, *u = NULL;
+
+    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch = ch->next) {
+        if (ch->type == NODE_NUMBER) continue;
+
+        /* accumulate all x and x^k */
+        int deg;
+        if (read_poly_power_of_var(ch, var, &deg)) { n += deg; continue; }
+
+        /* single trig(u) that depends on var */
+        if (!trig && (is_op(ch, OP_SIN) || is_op(ch, OP_COS))) {
+            pcas_ast_t *arg = ast_ChildGet(ch, 0);
+            if (arg && depends_on_var(arg, var)) { trig = ch; u = arg; continue; }
+        }
+
+        /* anything else var-dependent -> not this pattern */
+        if (!is_const_wrt(ch, var)) return NULL;
+    }
+
+    if (!trig) return NULL;
+
+    /* u must be linear in var: u = a*var + b, a != 0 */
+    pcas_ast_t *a_node = NULL;
+    if (!expo_linear_coeff(u, var, &a_node)) return NULL;
+    if (!a_node || a_node->type != NODE_NUMBER || mp_rat_compare_zero(a_node->op.num) == 0) {
+        if (a_node) ast_Cleanup(a_node);
+        return NULL;
+    }
+    ast_Cleanup(a_node);
+
+    /* Use your closed-form finite sum builder */
+    return integrate_xn_times_trig_linear(expr, var);
+}
+
+/* ---------------- Main integrator ---------------- */
 /* ---------------- Main integrator ---------------- */
 /* ---------------- Main integrator ---------------- */
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
@@ -2661,6 +2937,12 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
 
     /* Products: special trig products first, then targeted IBP and constant-factor extraction */
     if (op == OP_MULT) {
+        /* NEW: front-door for x^n * (sin|cos)(linear) — mirror the ln(x) fast path */
+        {
+            pcas_ast_t *pt_front = integrate_poly_trig_frontdoor(expr, var);
+            if (pt_front) return pt_front;
+        }
+
         /* sin^m x cos^n x (m odd or n odd) */
         pcas_ast_t *sp1 = integrate_sin_cos_product(expr, var);
         if (sp1) return sp1;
