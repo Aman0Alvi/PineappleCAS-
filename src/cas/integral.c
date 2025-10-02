@@ -703,64 +703,81 @@ static pcas_ast_t *integrate_sec_power_reduction(int n, pcas_ast_t *var) {
 static pcas_ast_t *make_cos_of_var(pcas_ast_t *v) { return ast_MakeUnary(OP_COS, ast_Copy(v)); }
 static pcas_ast_t *make_sin_of_var(pcas_ast_t *v) { return ast_MakeUnary(OP_SIN, ast_Copy(v)); }
 
-/* Handle ∫ sin^m x cos^n x dx with integer m,n >=0, for (m odd) OR (n odd).
-   - If m odd:  write sin^m = sin * (sin^2)^((m-1)/2) = sin * (1 - cos^2)^((m-1)/2), u=cos x, du = -sin x dx
-   - If n odd:  write cos^n = cos * (cos^2)^((n-1)/2) = cos * (1 - sin^2)^((n-1)/2), u=sin x, du =  cos x dx
-*/
+/* Handle ∫ sin^m(x) cos^n(x) dx when (m odd) OR (n odd).
+   STRICT MATCH: only numeric factors and sin/cos (with integer powers) are allowed.
+   If any other x-dependent factor (e.g. x^k) is present, return NULL so other
+   product handlers (like x^n * trig(ax+b)) can take over. */
 static pcas_ast_t *integrate_sin_cos_product(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!is_op(expr, OP_MULT)) return NULL;
 
-    /* detect exact shape sin^m * cos^n (order-insensitive, only integer powers) */
-    int m = 0, n = 0;
-    pcas_ast_t *sin_pow = NULL, *cos_pow = NULL;
+    int m = 0, n = 0;  /* total powers of sin and cos */
 
-    for (pcas_ast_t *ch = ast_ChildGet(expr,0); ch; ch = ch->next) {
+    for (pcas_ast_t *ch = ast_ChildGet(expr, 0); ch; ch = ch->next) {
+        /* numeric constants are fine */
+        if (ch->type == NODE_NUMBER) continue;
+
         if (is_op(ch, OP_POW)) {
-            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+            pcas_ast_t *b = ast_ChildGet(ch, 0), *e = ast_ChildGet(ch, 1);
             int k;
+
             if (is_op(b, OP_SIN)) {
-                pcas_ast_t *a = ast_ChildGet(b,0);
-                if (a && a->type==NODE_SYMBOL && ast_Compare(a,var) && get_int_exponent(e, &k) && k>=0) {
-                    m += k; sin_pow = ch; continue;
-                }
-            } else if (is_op(b, OP_COS)) {
-                pcas_ast_t *a = ast_ChildGet(b,0);
-                if (a && a->type==NODE_SYMBOL && ast_Compare(a,var) && get_int_exponent(e, &k) && k>=0) {
-                    n += k; cos_pow = ch; continue;
-                }
+                pcas_ast_t *a = ast_ChildGet(b, 0);
+                if (!(a && a->type == NODE_SYMBOL && ast_Compare(a, var) &&
+                      get_int_exponent(e, &k) && k >= 0)) return NULL;
+                m += k;
+                continue;
             }
-        } else if (is_op(ch, OP_SIN)) {
-            pcas_ast_t *a = ast_ChildGet(ch,0);
-            if (a && a->type==NODE_SYMBOL && ast_Compare(a,var)) { m += 1; continue; }
-        } else if (is_op(ch, OP_COS)) {
-            pcas_ast_t *a = ast_ChildGet(ch,0);
-            if (a && a->type==NODE_SYMBOL && ast_Compare(a,var)) { n += 1; continue; }
-        } else if (ch->type == NODE_NUMBER) {
-            /* numeric factor ok */
+            if (is_op(b, OP_COS)) {
+                pcas_ast_t *a = ast_ChildGet(b, 0);
+                if (!(a && a->type == NODE_SYMBOL && ast_Compare(a, var) &&
+                      get_int_exponent(e, &k) && k >= 0)) return NULL;
+                n += k;
+                continue;
+            }
+
+            /* STRICT: any other power that depends on x (e.g. x^k) => not our pattern */
+            if (depends_on_var(ch, var)) return NULL;
+
+            /* otherwise it’s a pure constant (e.g. a folded power) — allow it */
             continue;
-        } else {
-            return NULL; /* other stuff present -> not this pattern */
         }
+
+        if (is_op(ch, OP_SIN)) {
+            pcas_ast_t *a = ast_ChildGet(ch, 0);
+            if (!(a && a->type == NODE_SYMBOL && ast_Compare(a, var))) return NULL;
+            m += 1;
+            continue;
+        }
+        if (is_op(ch, OP_COS)) {
+            pcas_ast_t *a = ast_ChildGet(ch, 0);
+            if (!(a && a->type == NODE_SYMBOL && ast_Compare(a, var))) return NULL;
+            n += 1;
+            continue;
+        }
+
+        /* Anything else that depends on x (like x^k, tan, etc.) => not this handler */
+        if (!is_const_wrt(ch, var)) return NULL;
+        /* pure constants are fine */
     }
 
-    /* silence “set but not used” (kept for potential future use) */
-    (void)sin_pow;
-    (void)cos_pow;
-
-    if (m<0 || n<0) return NULL;
+    /* Use the standard odd-power tactics */
     if ((m & 1) == 1) {
-        /* m odd: peel one sin, expand (1 - cos^2)^k * cos^n and integrate in u=cos, add minus sign */
-        int k = (m-1)/2;
-        return poly_u_antiderivative_and_substitute(make_cos_of_var, var, /*base_pow=*/n, k, /*plus=*/false, /*negate=*/true);
+        /* m odd: sin^m = sin*(1 - cos^2)^((m-1)/2), u = cos x, du = -sin x dx */
+        int k = (m - 1) / 2;
+        return poly_u_antiderivative_and_substitute(
+            make_cos_of_var, var, /*base_pow=*/n, k, /*plus=*/false, /*negate=*/true);
     }
     if ((n & 1) == 1) {
-        /* n odd: peel one cos, expand (1 - sin^2)^k * sin^m and integrate in u=sin */
-        int k = (n-1)/2;
-        return poly_u_antiderivative_and_substitute(make_sin_of_var, var, /*base_pow=*/m, k, /*plus=*/false, /*negate=*/false);
+        /* n odd: cos^n = cos*(1 - sin^2)^((n-1)/2), u = sin x, du = cos x dx */
+        int k = (n - 1) / 2;
+        return poly_u_antiderivative_and_substitute(
+            make_sin_of_var, var, /*base_pow=*/m, k, /*plus=*/false, /*negate=*/false);
     }
 
-    return NULL; /* even-even not handled here (leave to other logic/IBP) */
+    /* even-even not handled here */
+    return NULL;
 }
+
 /* tan^m x * sec^n x:
    - if n even (>=2): u = tan x, du = sec^2 x dx  → polynomial in u
    - if n odd  and m even: expand tan^m = (sec^2-1)^{m/2}, integrate each sec^P by reduction
@@ -2321,6 +2338,10 @@ static pcas_ast_t *integrate_xn_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *
     if (mp_rat_compare_value(c,1,1)!=0) {
         res = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(c)), res);
     }
+
+    /* NEW: expand just this result so x^n·(sin|cos) prints cleanly. */
+    expand(res, EXP_DISTRIB_NUMBERS | EXP_DISTRIB_MULTIPLICATION | EXP_DISTRIB_ADDITION);
+
     simp(res);
 
     num_Cleanup(c);
@@ -2518,7 +2539,6 @@ static pcas_ast_t *integrate_product(pcas_ast_t *expr, pcas_ast_t *var) {
     ast_Cleanup(rest_factor);
     return NULL;
 }
-
 
 
 
