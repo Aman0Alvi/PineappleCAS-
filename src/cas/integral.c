@@ -9,6 +9,17 @@ void replace_node(pcas_ast_t *dst, pcas_ast_t *src);
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var);
 /* needed because we call it before its definition */
 static bool expo_linear_coeff(pcas_ast_t *expo, pcas_ast_t *var, pcas_ast_t **a_out);
+/* ---- Quadratic-under-root helpers (forward decls) ---- */
+static bool extract_radicand(pcas_ast_t *root_like, pcas_ast_t **poly_out);
+static bool complete_square_simple(pcas_ast_t *poly, pcas_ast_t *var,
+                                   int *sgn_out, mp_rat *h_out, mp_rat *K_out);
+
+static pcas_ast_t *integrate_recip_x2_root_k2x2_minus_a2(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var);
+/* --- forward decls for the x^2 * sqrt(alpha x^2 - a^2) handler --- */
+static bool is_sqrt_like(pcas_ast_t *e);
+static bool extract_radicand(pcas_ast_t *root_like, pcas_ast_t **poly_out);
+static bool integrate_recip_x2_root_k2x2_minus_a2_matches(pcas_ast_t *den, pcas_ast_t *var,
+                                                          mp_rat *k_out, mp_rat *alpha_out, mp_rat *C_out);
 
 /* ---------------- IBP controls ---------------- */
 static bool s_ibp_enabled = true;
@@ -332,7 +343,94 @@ static bool is_one(pcas_ast_t *e) {
     return mp_rat_compare_value(e->op.num, 1, 1) == 0;
 }
 
+/* Is node exactly x^2 ? */
+static bool is_x_squared(pcas_ast_t *e, pcas_ast_t *var) {
+    if (!e || !isoptype(e, OP_POW)) return false;
+    pcas_ast_t *b = ast_ChildGet(e,0), *p = ast_ChildGet(e,1);
+    return b && b->type==NODE_SYMBOL && ast_Compare(b,var)
+        && p && p->type==NODE_NUMBER && mp_rat_compare_value(p->op.num,2,1)==0;
+}
 
+/* If root_like is sqrt(poly) or poly^(1/2) and poly = A*x^2 + C (no x-term),
+   with A>0 and C<0, return true and set:
+   - *poly_out to the EXACT radicand node (borrowed pointer, do not free),
+   - *A_out to a copy of A,
+   - *a2_out to a copy of (-C) (i.e., a^2 > 0).
+*/
+static bool match_root_k2x2_minus_a2(pcas_ast_t *root_like, pcas_ast_t *var,
+                                     pcas_ast_t **poly_out, mp_rat *A_out, mp_rat *a2_out) {
+    if (!root_like) return false;
+    pcas_ast_t *poly = NULL;
+    if (!extract_radicand(root_like, &poly) || !poly) return false;
+
+    /* Work on a simplified copy to read coefficients robustly. */
+    pcas_ast_t *flat = ast_Copy(poly);
+    simplify(flat, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE |
+                   SIMP_EVAL | SIMP_LIKE_TERMS);
+
+    /* Force to an ADD list for uniform scan */
+    if (!isoptype(flat, OP_ADD)) {
+        pcas_ast_t *sum = ast_MakeOperator(OP_ADD);
+        ast_ChildAppend(sum, ast_Copy(flat));
+        ast_Cleanup(flat);
+        flat = sum;
+    }
+
+    mp_rat A = num_FromInt(0);
+    mp_rat C = num_FromInt(0);
+    bool ok = true;
+
+    for (pcas_ast_t *t = ast_ChildGet(flat,0); t && ok; t = t->next) {
+        if (isoptype(t, OP_POW)) {
+            /* + x^2 */
+            pcas_ast_t *b = ast_ChildGet(t,0), *p = ast_ChildGet(t,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                p && p->type==NODE_NUMBER && mp_rat_compare_value(p->op.num,2,1)==0) {
+                mp_rat_add(A, num_FromInt(1), A);
+            } else ok = false;
+        } else if (isoptype(t, OP_MULT)) {
+            /* k * x^2  or  x^2 * k */
+            pcas_ast_t *u = ast_ChildGet(t,0), *v = ast_ChildGet(t,1);
+            if (u && v && isoptype(u, OP_POW) && v->type==NODE_NUMBER) {
+                pcas_ast_t *b = ast_ChildGet(u,0), *p = ast_ChildGet(u,1);
+                if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                    p && p->type==NODE_NUMBER && mp_rat_compare_value(p->op.num,2,1)==0) {
+                    mp_rat_add(A, v->op.num, A);
+                } else ok = false;
+            } else if (u && v && isoptype(v, OP_POW) && u->type==NODE_NUMBER) {
+                pcas_ast_t *b = ast_ChildGet(v,0), *p = ast_ChildGet(v,1);
+                if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                    p && p->type==NODE_NUMBER && mp_rat_compare_value(p->op.num,2,1)==0) {
+                    mp_rat_add(A, u->op.num, A);
+                } else ok = false;
+            } else if (t->type==NODE_NUMBER) {
+                mp_rat_add(C, t->op.num, C);
+            } else {
+                ok = false;
+            }
+        } else if (t->type==NODE_NUMBER) {
+            mp_rat_add(C, t->op.num, C);
+        } else {
+            ok = false;
+        }
+    }
+
+    ast_Cleanup(flat);
+
+    /* Require A>0 and C<0 (i.e., A*x^2 - a^2) */
+    if (!ok || mp_rat_compare_zero(A) <= 0 || mp_rat_compare_zero(C) >= 0) {
+        num_Cleanup(A); num_Cleanup(C);
+        return false;
+    }
+
+    if (poly_out) *poly_out = poly;
+    if (A_out) *A_out = A; else num_Cleanup(A);
+    /* a^2 = -C */
+    mp_rat a2 = num_FromInt(0); mp_rat_sub(num_FromInt(0), C, a2); /* -C */
+    if (a2_out) *a2_out = a2; else num_Cleanup(a2);
+    num_Cleanup(C);
+    return true;
+}
 
 /* Return 1 if node is unary natural log ln(arg) with arg==var.
    Return 2 if node is binary log_base(arg) with arg==var and set *base_out=base.
@@ -1161,6 +1259,266 @@ static bool complete_square_simple(pcas_ast_t *poly, pcas_ast_t *var, int *sgn_o
         num_Cleanup(half); num_Cleanup(b); num_Cleanup(c); num_Cleanup(h2);
         return true;
     }
+}
+
+/* Detect Q(x) = (k*x)^2 - a^2 (up to commutativity/normalization).
+   On success:
+     - *k_ast_out is an AST representing k  (either NUMBER or ROOT(2, s))
+     - *a2_out    is the rational a^2 (as mp_rat)
+   Returns true only for the exact "square minus positive constant" shape
+   and with no linear term in x. */
+static bool match_poly_kx2_minus_a2(pcas_ast_t *poly, pcas_ast_t *var,
+                                    pcas_ast_t **k_ast_out, mp_rat *a2_out) {
+    if (!poly || !var || !k_ast_out || !a2_out) return false;
+
+    /* Work on a simplified copy so we can safely probe structure. */
+    pcas_ast_t *p = ast_Copy(poly);
+    simplify(p, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE |
+                SIMP_EVAL | SIMP_LIKE_TERMS);
+
+    /* Ensure sum-of-terms shape for straightforward scanning. */
+    if (!isoptype(p, OP_ADD)) {
+        pcas_ast_t *sum = ast_MakeOperator(OP_ADD);
+        ast_ChildAppend(sum, ast_Copy(p));
+        ast_Cleanup(p);
+        p = sum;
+    }
+
+    /* We want exactly ONE quadratic-in-x term and ONE constant term,
+       and no other var-dependent pieces. */
+    pcas_ast_t *k_ast = NULL;        /* AST for k (number or sqrt-of-number) */
+    mp_rat a2 = num_FromInt(0);      /* a^2 (positive rational) */
+    bool have_square = false, have_const = false;
+    bool ok = true;
+
+    for (pcas_ast_t *t = ast_ChildGet(p, 0); t && ok; t = t->next) {
+        if (t->type == NODE_NUMBER) {
+            /* take as the constant term; must be negative for ( ... ) - a^2 */
+            if (have_const) { ok = false; break; }
+            /* require negative to be " - a^2 " */
+            if (mp_rat_compare_zero(t->op.num) >= 0) { ok = false; break; }
+            mp_rat neg = num_FromInt(0);
+            mp_rat_sub(neg, t->op.num, neg); /* -const */
+            num_Cleanup(a2);
+            a2 = neg;
+            have_const = true;
+            continue;
+        }
+
+        /* Quadratic term possibilities:
+           (i)   (var)^2                      => k = 1
+           (ii)  (c * var)^2                  => k = |c|
+           (iii) c * (var)^2                  => k = sqrt(c)
+        */
+        if (isoptype(t, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(t, 0), *e = ast_ChildGet(t, 1);
+            if (e && e->type == NODE_NUMBER && mp_rat_compare_value(e->op.num, 2, 1) == 0) {
+                /* (var)^2 */
+                if (b && b->type == NODE_SYMBOL && ast_Compare(b, var)) {
+                    if (have_square) { ok = false; break; }
+                    k_ast = N(1);
+                    have_square = true;
+                    continue;
+                }
+                /* (c*var)^2 */
+                if (isoptype(b, OP_MULT)) {
+                    pcas_ast_t *u = ast_ChildGet(b, 0), *v = ast_ChildGet(b, 1);
+                    if (u && v &&
+                        ((u->type == NODE_NUMBER && v->type == NODE_SYMBOL && ast_Compare(v, var)) ||
+                         (v->type == NODE_NUMBER && u->type == NODE_SYMBOL && ast_Compare(u, var)))) {
+                        if (have_square) { ok = false; break; }
+                        pcas_ast_t *cn = (u->type == NODE_NUMBER) ? u : v;
+                        /* k = |c|  (magnitude; sign squares out) */
+                        mp_rat cabs = num_Copy(cn->op.num);
+                        if (mp_rat_compare_zero(cabs) < 0) mp_rat_neg(cabs, cabs);
+                        k_ast = ast_MakeNumber(cabs);
+                        have_square = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        /* c * (var)^2 */
+        if (isoptype(t, OP_MULT)) {
+            pcas_ast_t *u = ast_ChildGet(t, 0), *v = ast_ChildGet(t, 1);
+            if (u && v && u->type == NODE_NUMBER && isoptype(v, OP_POW)) {
+                pcas_ast_t *vb = ast_ChildGet(v, 0), *ve = ast_ChildGet(v, 1);
+                if (vb && vb->type == NODE_SYMBOL && ast_Compare(vb, var) &&
+                    ve && ve->type == NODE_NUMBER && mp_rat_compare_value(ve->op.num, 2, 1) == 0) {
+                    if (have_square) { ok = false; break; }
+                    /* k = sqrt(u) as an AST (allow non-square rationals) */
+                    if (mp_rat_compare_zero(u->op.num) <= 0) { ok = false; break; }
+                    k_ast = ast_MakeBinary(OP_ROOT, N(2), ast_MakeNumber(num_Copy(u->op.num)));
+                    have_square = true;
+                    continue;
+                }
+            }
+        }
+
+        /* any other var-dependent term => not our pattern */
+        if (!is_const_wrt(t, var)) { ok = false; break; }
+    }
+
+    bool success = ok && have_square && have_const;
+    if (!success) {
+        if (k_ast) ast_Cleanup(k_ast);
+        num_Cleanup(a2);
+        ast_Cleanup(p);
+        return false;
+    }
+
+    *k_ast_out = k_ast;
+    *a2_out    = a2;
+    ast_Cleanup(p);
+    return true;
+}
+
+/* ∫ (c_num) / ( x^2 * sqrt(A x^2 - a^2) * c_den ) dx
+   = (c_num/c_den) * ( - sqrt(A x^2 - a^2) / (a^2 x) ) + C
+   Note: result is independent of A’s square root (scales away).
+*/
+static pcas_ast_t *integrate_recip_x2_times_root_k2x2_minus_a2(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var) {
+    if (!den || !var) return NULL;
+
+    /* Parse denominator: need exactly one x^2 and exactly one sqrt(A x^2 - a^2); collect numeric factor. */
+    bool saw_x2 = false;
+    pcas_ast_t *root_like = NULL;
+    mp_rat c_den = num_FromInt(1);
+
+    if (isoptype(den, OP_MULT)) {
+        for (pcas_ast_t *f = ast_ChildGet(den,0); f; f = f->next) {
+            if (!saw_x2 && is_x_squared(f, var)) { saw_x2 = true; continue; }
+            if (!root_like && is_sqrt_like(f))   { root_like = f; continue; }
+            if (f->type == NODE_NUMBER) { mp_rat_mul(c_den, f->op.num, c_den); continue; }
+            if (!is_const_wrt(f, var))  { num_Cleanup(c_den); return NULL; }
+        }
+    } else {
+        if (is_x_squared(den, var)) saw_x2 = true;
+        else if (is_sqrt_like(den)) root_like = den;
+        else if (den->type == NODE_NUMBER) { mp_rat_mul(c_den, den->op.num, c_den); }
+        else { num_Cleanup(c_den); return NULL; }
+    }
+
+    if (!(saw_x2 && root_like)) { num_Cleanup(c_den); return NULL; }
+
+    /* Check the radicand is A*x^2 + C with A>0, C<0 and read a^2 = -C. */
+    pcas_ast_t *poly = NULL;
+    mp_rat A = NULL, a2 = NULL;
+    if (!match_root_k2x2_minus_a2(root_like, var, &poly, &A, &a2)) {
+        num_Cleanup(c_den);
+        return NULL;
+    }
+
+    /* Numerator must be numeric (defaults to 1). */
+    mp_rat c_num = num_FromInt(1);
+    if (num && num->type == NODE_NUMBER) {
+        mp_rat_mul(c_num, num->op.num, c_num);
+    } else if (num) {
+        /* Non-numeric numerator — not this pattern. */
+        num_Cleanup(c_den); num_Cleanup(A); num_Cleanup(a2); num_Cleanup(c_num);
+        return NULL;
+    }
+
+    /* scale = c_num / c_den */
+    mp_rat scale = num_FromInt(1);
+    mp_rat_div(c_num, c_den, scale);
+
+    /* Build:  - (scale) * sqrt(poly) / (a^2 * x)  */
+    pcas_ast_t *sqrtQ = is_sqrt_like(root_like) ? ast_Copy(root_like)
+                                                : ast_MakeBinary(OP_ROOT, N(2), ast_Copy(poly));
+    pcas_ast_t *den_a2x = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(a2)), ast_Copy(var));
+    pcas_ast_t *core = ast_MakeBinary(OP_DIV, sqrtQ, den_a2x);
+    pcas_ast_t *res  = ast_MakeBinary(OP_MULT, N(-1),
+                         (mp_rat_compare_value(scale,1,1)!=0)
+                           ? ast_MakeBinary(OP_MULT, ast_MakeNumber(scale), core)
+                           : core);
+    simp(res);
+
+    num_Cleanup(A); num_Cleanup(a2); num_Cleanup(c_den); num_Cleanup(c_num);
+    return res;
+}
+
+
+/* Handle:  numerator/(denominator) with
+      numerator = constant (default 1)
+      denominator = (constant) * x^2 * sqrt( (k*x)^2 - a^2 )
+   Returns NULL if not matched.
+
+   Closed form:
+      ∫ dx / ( x^2 * sqrt( (k x)^2 - a^2 ) )
+        = [ sqrt( (k x)^2 - a^2 ) ] / ( a^2 * k * x )
+*/
+static pcas_ast_t *integrate_recip_x2_times_kx2_minus_a2_root(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var) {
+    if (!den || !var) return NULL;
+
+    /* --- 1) Parse denominator: need x^2 * sqrt(poly) times (optional) numeric constants --- */
+    bool saw_x2 = false;
+    pcas_ast_t *root_like = NULL;
+    mp_rat cden = num_FromInt(1);
+
+    if (isoptype(den, OP_MULT)) {
+        for (pcas_ast_t *ch = ast_ChildGet(den, 0); ch; ch = ch->next) {
+            if (!saw_x2 && isoptype(ch, OP_POW)) {
+                pcas_ast_t *b = ast_ChildGet(ch, 0), *e = ast_ChildGet(ch, 1);
+                if (b && b->type == NODE_SYMBOL && ast_Compare(b, var) &&
+                    e && e->type == NODE_NUMBER && mp_rat_compare_value(e->op.num, 2, 1) == 0) {
+                    saw_x2 = true;
+                    continue;
+                }
+            }
+            if (!root_like && is_sqrt_like(ch)) { root_like = ch; continue; }
+            if (ch->type == NODE_NUMBER) { mp_rat_mul(cden, ch->op.num, cden); continue; }
+            if (!is_const_wrt(ch, var)) { num_Cleanup(cden); return NULL; }
+        }
+    } else {
+        /* Single-factor forms (rare but cheap to allow): not our pattern unless it's exactly x^2 or sqrt(...) */
+        num_Cleanup(cden);
+        return NULL;
+    }
+
+    if (!saw_x2 || !root_like) { num_Cleanup(cden); return NULL; }
+
+    /* --- 2) Extract poly under the sqrt and match (k*x)^2 - a^2 --- */
+    pcas_ast_t *poly = NULL;
+    if (!extract_radicand(root_like, &poly) || !poly) { num_Cleanup(cden); return NULL; }
+
+    pcas_ast_t *k_ast = NULL;
+    mp_rat a2 = NULL;
+    if (!match_poly_kx2_minus_a2(poly, var, &k_ast, &a2)) { num_Cleanup(cden); return NULL; }
+
+    /* --- 3) Collect numerator constant (default 1) --- */
+    mp_rat cnum = num_FromInt(1);
+    if (num && num->type == NODE_NUMBER) mp_rat_mul(cnum, num->op.num, cnum);
+    else if (num && !is_const_wrt(num, var)) { ast_Cleanup(k_ast); num_Cleanup(a2); num_Cleanup(cden); num_Cleanup(cnum); return NULL; }
+
+    /* --- 4) Build result: (cnum/cden) * (1/a^2) * (1/k) * sqrt(poly)/x --- */
+    /* sqrt(poly) — reuse the original shape for nicer output */
+    pcas_ast_t *sqrt_poly = ast_MakeBinary(OP_ROOT, N(2), ast_Copy(poly));
+
+    /* sqrt(poly)/x */
+    pcas_ast_t *frac = ast_MakeBinary(OP_DIV, sqrt_poly, ast_Copy(var));
+
+    /* multiply by 1/a^2 */
+    pcas_ast_t *one_over_a2 = ast_MakeBinary(OP_DIV, N(1), ast_MakeNumber(num_Copy(a2)));
+    pcas_ast_t *res = ast_MakeBinary(OP_MULT, one_over_a2, frac);
+
+    /* multiply by 1/k */
+    pcas_ast_t *one_over_k = ast_MakeBinary(OP_DIV, N(1), k_ast);
+    res = ast_MakeBinary(OP_MULT, one_over_k, res);
+
+    /* multiply by (cnum/cden) */
+    mp_rat scale = num_FromInt(1);
+    mp_rat_div(cnum, cden, scale);
+    if (mp_rat_compare_value(scale, 1, 1) != 0) {
+        res = ast_MakeBinary(OP_MULT, ast_MakeNumber(scale), res);
+    }
+
+    simp(res);
+    /* cleanup */
+    num_Cleanup(a2);
+    num_Cleanup(cden);
+    num_Cleanup(cnum);
+    return res;
 }
 
 /* Try to read coefficients (a,b,c) from a quadratic in 'var'.
@@ -2642,6 +3000,246 @@ static pcas_ast_t *integrate_root_over_x(pcas_ast_t *num, pcas_ast_t *den, pcas_
     return result;
 }
 
+/* Match den = (const k) * x^2 * sqrt(alpha*x^2 + C), allowing either ROOT(2,...) or POW(...,1/2) */
+static bool integrate_recip_x2_root_k2x2_minus_a2_matches(pcas_ast_t *den, pcas_ast_t *var,
+                                                          mp_rat *k_out, mp_rat *alpha_out, mp_rat *C_out)
+{
+    if (!den || !var || !k_out || !alpha_out || !C_out) return false;
+
+    mp_rat k = num_FromInt(1);
+    bool saw_x2 = false;
+    pcas_ast_t *root_like = NULL;
+
+    /* Accept product in any order; fold numeric constants into k */
+    if (isoptype(den, OP_MULT)) {
+        for (pcas_ast_t *ch = ast_ChildGet(den,0); ch; ch = ch->next) {
+            if (!saw_x2 && isoptype(ch, OP_POW)) {
+                pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+                if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER &&
+                    mp_rat_compare_value(e->op.num, 2, 1)==0) { saw_x2 = true; continue; }
+            }
+            if (!root_like && is_sqrt_like(ch)) { root_like = ch; continue; }
+            if (ch->type == NODE_NUMBER) { mp_rat_mul(k, ch->op.num, k); continue; }
+            if (!is_const_wrt(ch, var)) { num_Cleanup(k); return false; }
+        }
+    } else {
+        /* Allow exactly x^2 or sqrt(...) alone (the other factor is expected to be multiplied elsewhere) */
+        if (isoptype(den, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(den,0), *e = ast_ChildGet(den,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) && e && e->type==NODE_NUMBER &&
+                mp_rat_compare_value(e->op.num,2,1)==0) { saw_x2 = true; }
+        } else if (is_sqrt_like(den)) {
+            root_like = den;
+        } else if (den->type==NODE_NUMBER) {
+            mp_rat_mul(k, den->op.num, k);
+        } else return false;
+    }
+
+    if (!(saw_x2 && root_like)) { num_Cleanup(k); return false; }
+
+    /* Extract radicand R(x) and read it as alpha*x^2 + C (no linear term). */
+    pcas_ast_t *poly = NULL;
+    if (!extract_radicand(root_like, &poly) || !poly) { num_Cleanup(k); return false; }
+
+    /* Normalize a local copy to flatten things like 9*x^2 + (-4) */
+    pcas_ast_t *P = ast_Copy(poly);
+    simplify(P, SIMP_NORMALIZE | SIMP_RATIONAL | SIMP_COMMUTATIVE | SIMP_EVAL | SIMP_LIKE_TERMS);
+
+    mp_rat alpha = num_FromInt(0);
+    mp_rat C     = num_FromInt(0);
+    bool ok = true;
+
+    if (!isoptype(P, OP_ADD)) {
+        /* Could be a single term alpha*x^2 or a constant C */
+        if (isoptype(P, OP_POW)) {
+            pcas_ast_t *b = ast_ChildGet(P,0), *e = ast_ChildGet(P,1);
+            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num,2,1)==0) {
+                mp_rat_add(alpha, num_FromInt(1), alpha);
+            } else ok=false;
+        } else if (P->type==NODE_NUMBER) {
+            mp_rat_add(C, P->op.num, C);
+        } else ok=false;
+    } else {
+        for (pcas_ast_t *t = ast_ChildGet(P,0); t && ok; t = t->next) {
+            if (isoptype(t, OP_POW)) {
+                pcas_ast_t *b = ast_ChildGet(t,0), *e = ast_ChildGet(t,1);
+                if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                    e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num,2,1)==0) {
+                    mp_rat_add(alpha, num_FromInt(1), alpha);
+                } else ok=false;
+            } else if (isoptype(t, OP_MULT)) {
+                pcas_ast_t *u = ast_ChildGet(t,0), *v = ast_ChildGet(t,1);
+                /* k * x^2 or x^2 * k */
+                if (u && v && isoptype(u, OP_POW) && v && v->type==NODE_NUMBER) {
+                    pcas_ast_t *b = ast_ChildGet(u,0), *e = ast_ChildGet(u,1);
+                    if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                        e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num,2,1)==0) {
+                        mp_rat_add(alpha, v->op.num, alpha);
+                    } else ok=false;
+                } else if (u && v && isoptype(v, OP_POW) && u && u->type==NODE_NUMBER) {
+                    pcas_ast_t *b = ast_ChildGet(v,0), *e = ast_ChildGet(v,1);
+                    if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                        e && e->type==NODE_NUMBER && mp_rat_compare_value(e->op.num,2,1)==0) {
+                        mp_rat_add(alpha, u->op.num, alpha);
+                    } else ok=false;
+                } else ok=false;
+            } else if (t->type==NODE_NUMBER) {
+                mp_rat_add(C, t->op.num, C);
+            } else {
+                ok=false;
+            }
+        }
+    }
+
+    ast_Cleanup(P);
+    if (!ok) { num_Cleanup(k); num_Cleanup(alpha); num_Cleanup(C); return false; }
+
+    /* require alpha>0 and C<0 i.e. alpha*x^2 - a^2 */
+    if (mp_rat_compare_zero(alpha) <= 0 || mp_rat_compare_zero(C) >= 0) {
+        num_Cleanup(k); num_Cleanup(alpha); num_Cleanup(C); return false;
+    }
+
+    *k_out     = k;
+    *alpha_out = alpha;
+    *C_out     = C;
+    return true;
+}
+
+/* Build antiderivative for ∫ [num]/[den] with den = k * x^2 * sqrt(alpha*x^2 + C), alpha>0, C<0
+   Result:  (num_const/k) * ( - sqrt(alpha*x^2 + C) / ((-C) * x) ) */
+static pcas_ast_t *integrate_recip_x2_root_k2x2_minus_a2(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var)
+{
+    if (!den || !var) return NULL;
+
+    /* numerator must be pure constant 1 (or numeric, which we’ll carry) */
+    mp_rat numc = num_FromInt(1);
+    if (num) {
+        if (num->type == NODE_NUMBER) {
+            mp_rat_mul(numc, num->op.num, numc);
+        } else {
+            num_Cleanup(numc);
+            return NULL;
+        }
+    }
+
+    mp_rat k     = NULL;
+    mp_rat alpha = NULL;
+    mp_rat C     = NULL;
+    if (!integrate_recip_x2_root_k2x2_minus_a2_matches(den, var, &k, &alpha, &C)) {
+        return NULL;
+    }
+
+    /* Build pieces: sqrt(alpha*x^2 + C) and the 1/((-C)*x) scale */
+    pcas_ast_t *ax2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(alpha)),
+                                     ast_MakeBinary(OP_POW, ast_Copy(var), N(2)));
+    pcas_ast_t *rad = ast_MakeBinary(OP_ADD, ax2, ast_MakeNumber(num_Copy(C)));
+    pcas_ast_t *sqrtR = ast_MakeBinary(OP_ROOT, N(2), rad);
+
+    mp_rat Cp = num_Copy(C); mp_rat_neg(Cp, Cp);  /* Cp = -C > 0 */
+    pcas_ast_t *scale = ast_MakeBinary(OP_MULT, ast_MakeNumber(Cp), ast_Copy(var));  /* (-C)*x */
+
+    /* core = - sqrtR / scale */
+    pcas_ast_t *core = ast_MakeBinary(OP_MULT, N(-1), ast_MakeBinary(OP_DIV, ast_Copy(sqrtR), scale));
+
+    /* overall numeric factor = numc / k */
+    mp_rat overall = num_FromInt(0); mp_rat_div(numc, k, overall);
+    pcas_ast_t *res = ast_MakeBinary(OP_MULT, ast_MakeNumber(overall), core);
+    simp(res);
+
+    /* cleanup */
+    num_Cleanup(numc);
+    num_Cleanup(k);
+    num_Cleanup(alpha);
+    num_Cleanup(C);
+
+    return res;
+}
+
+/* NEW: ∫ sqrt(Q(x)) dx, where Q is a quadratic in var.
+   Uses complete-the-square Q = s*(x-h)^2 + K and standard closed forms.
+   Returns NULL if it cannot recognize/handle the pattern. */
+static pcas_ast_t *integrate_sqrt_quadratic(pcas_ast_t *root_like, pcas_ast_t *var) {
+    if (!root_like || !is_sqrt_like(root_like)) return NULL;
+
+    /* Pull polynomial Q(x) out of sqrt(Q). */
+    pcas_ast_t *poly = NULL;
+    if (!extract_radicand(root_like, &poly) || !poly) return NULL;
+
+    int sgn = 0; mp_rat h = num_FromInt(0), K = num_FromInt(0);
+    if (!complete_square_simple(poly, var, &sgn, &h, &K)) {
+        num_Cleanup(h); num_Cleanup(K);
+        return NULL;
+    }
+
+    /* (x - h) as x + (-h) */
+    mp_rat neg_h = num_FromInt(0); mp_rat_sub(neg_h, h, neg_h);
+    pcas_ast_t *shift = ast_MakeBinary(OP_ADD, ast_Copy(var), ast_MakeNumber(num_Copy(neg_h)));
+
+    pcas_ast_t *res = NULL;
+
+    if (sgn > 0 && mp_rat_compare_zero(K) > 0) {
+        /* (x-h)^2 + K : 0.5*(x-h)*sqrt(...) + 0.5*K*asinh((x-h)/sqrt(K)) */
+        pcas_ast_t *sq = ast_MakeBinary(OP_POW, ast_Copy(shift), N(2));
+        pcas_ast_t *inside = ast_MakeBinary(OP_ADD, sq, ast_MakeNumber(num_Copy(K)));
+        pcas_ast_t *sqrt   = ast_MakeBinary(OP_ROOT, N(2), inside);
+
+        pcas_ast_t *term1 = ast_MakeBinary(OP_MULT, N(1),
+                           ast_MakeBinary(OP_DIV, ast_MakeBinary(OP_MULT, ast_Copy(shift), ast_Copy(sqrt)), N(2)));
+
+        pcas_ast_t *sqrtK = ast_MakeBinary(OP_ROOT, N(2), ast_MakeNumber(num_Copy(K)));
+        pcas_ast_t *asinh = ast_MakeUnary(OP_SINH_INV, ast_MakeBinary(OP_DIV, ast_Copy(shift), ast_Copy(sqrtK)));
+        pcas_ast_t *term2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(K)),
+                           ast_MakeBinary(OP_DIV, asinh, N(2)));
+
+        res = ast_MakeBinary(OP_ADD, term1, term2);
+        simp(res);
+    } else if (sgn > 0 && mp_rat_compare_zero(K) < 0) {
+        /* (x-h)^2 - A^2, A = sqrt(-K): 0.5*(x-h)*sqrt(...) - 0.5*A^2*ln|x-h+sqrt(...)| */
+        mp_rat A2 = num_FromInt(0); mp_rat_sub(num_FromInt(0), K, A2);           /* A^2 = -K */
+        pcas_ast_t *sq = ast_MakeBinary(OP_POW, ast_Copy(shift), N(2));
+        pcas_ast_t *inside = ast_MakeBinary(OP_ADD, sq, ast_MakeNumber(num_Copy(K))); /* K negative */
+        pcas_ast_t *sqrt   = ast_MakeBinary(OP_ROOT, N(2), inside);
+
+        pcas_ast_t *term1 = ast_MakeBinary(OP_DIV,
+                           ast_MakeBinary(OP_MULT, ast_Copy(shift), ast_Copy(sqrt)), N(2));
+
+        pcas_ast_t *sum   = ast_MakeBinary(OP_ADD, ast_Copy(shift), ast_Copy(sqrt));
+        pcas_ast_t *ln    = ast_MakeUnary(OP_LOG, sum);
+        pcas_ast_t *term2 = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(A2)),
+                           ast_MakeBinary(OP_DIV, ln, N(2)));
+
+        res = ast_MakeBinary(OP_ADD, term1, ast_MakeBinary(OP_MULT, N(-1), term2));
+        simp(res);
+    } else if (sgn < 0 && mp_rat_compare_zero(K) > 0) {
+        /* K - (x-h)^2 : 0.5*(x-h)*sqrt(...) + 0.5*K*arcsin((x-h)/sqrt(K)) */
+        pcas_ast_t *diff = ast_MakeBinary(OP_ADD,
+                           ast_MakeNumber(num_Copy(K)),
+                           ast_MakeBinary(OP_MULT, N(-1),
+                               ast_MakeBinary(OP_POW, ast_Copy(shift), N(2))));
+        pcas_ast_t *sqrt   = ast_MakeBinary(OP_ROOT, N(2), diff);
+
+        pcas_ast_t *term1  = ast_MakeBinary(OP_DIV,
+                           ast_MakeBinary(OP_MULT, ast_Copy(shift), ast_Copy(sqrt)), N(2));
+
+        pcas_ast_t *sqrtK  = ast_MakeBinary(OP_ROOT, N(2), ast_MakeNumber(num_Copy(K)));
+        pcas_ast_t *asin   = ast_MakeUnary(OP_SIN_INV, ast_MakeBinary(OP_DIV, ast_Copy(shift), ast_Copy(sqrtK)));
+        pcas_ast_t *term2  = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(K)),
+                           ast_MakeBinary(OP_DIV, asin, N(2)));
+
+        res = ast_MakeBinary(OP_ADD, term1, term2);
+        simp(res);
+    } else {
+        num_Cleanup(h); num_Cleanup(K); num_Cleanup(neg_h);
+        return NULL; /* Unhandled sign pattern */
+    }
+
+    num_Cleanup(h); num_Cleanup(K); num_Cleanup(neg_h);
+    return res;
+}
+
+
+/* ---------------- Main integrator ---------------- */
 /* ---------------- Main integrator ---------------- */
 /* ---------------- Main integrator ---------------- */
 static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
@@ -2775,6 +3373,133 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
     if (op == OP_DIV) {
         pcas_ast_t *num = ast_ChildGet(expr,0), *den = ast_ChildGet(expr,1);
 
+        /* === NEW (robust):  c / ( k * x^2 * sqrt(α x^2 - β) ) ==========================
+           Matches even when sqrt is encoded as POW(base, DIV(1,2)).
+           Returns  (c/k) * sqrt(α x^2 - β) / (β x)
+        */
+        {
+            /* numerator constant c? (default 1) */
+            mp_rat cnum = num_FromInt(1);
+            bool num_ok = true;
+            if (num) {
+                if (num->type == NODE_NUMBER) {
+                    mp_rat_mul(cnum, num->op.num, cnum);
+                } else if (is_const_wrt(num, var)) {
+                    /* Non-number constants (like pi) – fold by letting simplifier multiply later */
+                } else {
+                    num_ok = false;
+                }
+            } else num_ok = false;
+
+            bool saw_x2 = false;
+            pcas_ast_t *sqrt_child = NULL;
+            mp_rat kden = num_FromInt(1); /* constant product in denominator */
+            bool shape_ok = (den != NULL);
+
+            if (shape_ok) {
+                if (is_op(den, OP_MULT)) {
+                    for (pcas_ast_t *ch = ast_ChildGet(den, 0); ch && shape_ok; ch = ch->next) {
+                        if (!saw_x2 && is_op(ch, OP_POW)) {
+                            pcas_ast_t *b = ast_ChildGet(ch,0), *e = ast_ChildGet(ch,1);
+                            if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                                e && e->type==NODE_NUMBER &&
+                                mp_rat_compare_value(e->op.num,2,1)==0) {
+                                saw_x2 = true; continue;
+                            }
+                        }
+                        if (!sqrt_child) {
+                            bool is_halfpow = false;
+                            if (is_op(ch, OP_ROOT)) {
+                                pcas_ast_t *deg = ast_ChildGet(ch,0);
+                                if (deg && deg->type==NODE_NUMBER &&
+                                    mp_rat_compare_value(deg->op.num,2,1)==0) {
+                                    is_halfpow = true;
+                                }
+                            } else if (is_op(ch, OP_POW)) {
+                                pcas_ast_t *e = ast_ChildGet(ch,1);
+                                if (e && e->type==NODE_NUMBER &&
+                                    mp_rat_compare_value(e->op.num,1,2)==0) {
+                                    is_halfpow = true;
+                                } else if (e && is_op(e, OP_DIV)) {
+                                    pcas_ast_t *n = ast_ChildGet(e,0), *d = ast_ChildGet(e,1);
+                                    if (n && d && n->type==NODE_NUMBER && d->type==NODE_NUMBER &&
+                                        mp_rat_compare_value(n->op.num,1,1)==0 &&
+                                        mp_rat_compare_value(d->op.num,2,1)==0) {
+                                        is_halfpow = true;
+                                    }
+                                }
+                            }
+                            if (is_halfpow) { sqrt_child = ch; continue; }
+                        }
+                        if (ch->type==NODE_NUMBER) { mp_rat_mul(kden, ch->op.num, kden); continue; }
+                        if (!is_const_wrt(ch, var)) { shape_ok = false; break; }
+                    }
+                } else {
+                    /* Not a product */
+                    if (is_op(den, OP_POW)) {
+                        pcas_ast_t *b = ast_ChildGet(den,0), *e = ast_ChildGet(den,1);
+                        if (b && b->type==NODE_SYMBOL && ast_Compare(b,var) &&
+                            e && e->type==NODE_NUMBER &&
+                            mp_rat_compare_value(e->op.num,2,1)==0) {
+                            saw_x2 = true;
+                        } else shape_ok = false;
+                    } else shape_ok = false;
+                }
+            }
+
+            if (shape_ok && saw_x2 && sqrt_child && num_ok) {
+                /* Extract Q(x) from sqrt_child */
+                pcas_ast_t *rad = NULL;
+                if (is_op(sqrt_child, OP_ROOT)) {
+                    rad = ast_ChildGet(sqrt_child, 1);
+                } else {
+                    /* OP_POW with exponent 1/2 (possibly DIV 1 2) */
+                    rad = ast_ChildGet(sqrt_child, 0);
+                }
+                if (rad) rad = ast_Copy(rad);
+
+                if (rad) {
+                    /* Read coefficients of Q(x) = a2 x^2 + a1 x + a0 */
+                    mp_rat a2=NULL, a1=NULL, a0=NULL;
+                    bool ok = read_quadratic_coeffs_general(rad, var, &a2, &a1, &a0);
+                    if (ok && mp_rat_compare_zero(a1)==0) {
+                        /* Need a2>0 and a0<0  => Q = a2 x^2 - beta with beta = -a0 > 0 */
+                        bool good = (mp_rat_compare_zero(a2) > 0) && (mp_rat_compare_zero(a0) < 0);
+                        if (good) {
+                            mp_rat beta = num_FromInt(0); mp_rat_sub(num_FromInt(0), a0, beta); /* -a0 */
+
+                            /* Build sqrt(Q) / (beta * x) */
+                            pcas_ast_t *sqrtQ = ast_MakeBinary(OP_ROOT, N(2), rad); /* rad consumed */
+                            pcas_ast_t *den_bx = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_Copy(beta)), ast_Copy(var));
+                            pcas_ast_t *core   = ast_MakeBinary(OP_DIV, sqrtQ, den_bx);
+
+                            /* Scale by cnum/kden if not 1 */
+                            mp_rat scale = num_FromInt(1); mp_rat_div(cnum, kden, scale);
+                            pcas_ast_t *res = (mp_rat_compare_value(scale,1,1)==0)
+                                              ? core
+                                              : ast_MakeBinary(OP_MULT, ast_MakeNumber(scale), core);
+                            simp(res);
+
+                            /* cleanup */
+                            num_Cleanup(a2); num_Cleanup(a1); num_Cleanup(a0);
+                            num_Cleanup(beta);
+                            num_Cleanup(cnum); num_Cleanup(kden);
+                            return res;
+                        }
+                    }
+                    /* cleanup on failure */
+                    if (rad) ast_Cleanup(rad);
+                    if (a2) num_Cleanup(a2);
+                    if (a1) num_Cleanup(a1);
+                    if (a0) num_Cleanup(a0);
+                }
+            }
+
+            num_Cleanup(cnum);
+            num_Cleanup(kden);
+        }
+        /* ===================== END NEW SPECIAL ===================== */
+
         /* sqrt(Q(x))/x with Q(x)=x^2 - A^2 (and numeric factors handled inside) */
         {
             pcas_ast_t *sp = integrate_root_over_x(num, den, var);
@@ -2873,7 +3598,9 @@ static pcas_ast_t *integrate_node(pcas_ast_t *expr, pcas_ast_t *var) {
     return NULL;
 }
 
-/* Public entry */
+
+
+
 void antiderivative(pcas_ast_t *e, pcas_ast_t *respect_to) {
     if (!e || !respect_to) return;
     pcas_ast_t *copy = ast_Copy(e);
