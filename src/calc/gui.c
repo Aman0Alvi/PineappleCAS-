@@ -1201,18 +1201,6 @@ void execute_conic() {
                         ast_MakeNumber(num_FromInt(2)));
                     formula = ast_MakeBinary(OP_ADD, x_term, y_term);
                     console_write("Circle formula in Y3");
-                    
-                    /* Display circle properties */
-                    char *h_str = num_ToString(result->center_h, 6);
-                    char *k_str = num_ToString(result->center_k, 6);
-                    char *r_str = num_ToString(result->radius, 6);
-                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
-                    console_write(buffer);
-                    sprintf(buffer, "Radius: %s", r_str);
-                    console_write(buffer);
-                    free(h_str);
-                    free(k_str);
-                    free(r_str);
                 } else if(result->type == CONIC_ELLIPSE) {
                     /* (x-h)^2/a^2 + (y-k)^2/b^2 = 1 */
                     mp_rat neg_h = num_Copy(result->center_h);
@@ -1243,30 +1231,6 @@ void execute_conic() {
                         ast_MakeNumber(num_Copy(result->b)));
                     formula = ast_MakeBinary(OP_ADD, x_term, y_term);
                     console_write("Ellipse formula in Y3");
-                    
-                    /* Display ellipse properties */
-                    char *h_str = num_ToString(result->center_h, 6);
-                    char *k_str = num_ToString(result->center_k, 6);
-                    char *a_str = num_ToString(result->a, 6);
-                    char *b_str = num_ToString(result->b, 6);
-                    char *c_str = num_ToString(result->c_dist, 6);
-                    char *fx_str = num_ToString(result->focus_x, 6);
-                    char *fy_str = num_ToString(result->focus_y, 6);
-                    
-                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
-                    console_write(buffer);
-                    sprintf(buffer, "Focus: (%s,%s)", fx_str, fy_str);
-                    console_write(buffer);
-                    sprintf(buffer, "a²=%s b²=%s c=%s", a_str, b_str, c_str);
-                    console_write(buffer);
-                    
-                    free(h_str);
-                    free(k_str);
-                    free(a_str);
-                    free(b_str);
-                    free(c_str);
-                    free(fx_str);
-                    free(fy_str);
                 } else if(result->type == CONIC_PARABOLA) {
                     /* Determine parabola orientation from coefficients:
                      * If A != 0 and C = 0: (y-k)^2 = 4p(x-h)  (opens left/right)
@@ -1280,7 +1244,6 @@ void execute_conic() {
                     
                     if (a_nonzero && !c_nonzero) {
                         /* (y-k)^2 = 4p(x-h)  where p is in result->a */
-                        /* Rearranged for graphing: x = (y-k)^2/(4p) + h */
                         mp_rat neg_h = num_Copy(result->center_h);
                         mp_rat temp = num_FromInt(-1);
                         mp_rat_mul(neg_h, temp, neg_h);
@@ -1290,10 +1253,6 @@ void execute_conic() {
                         temp = num_FromInt(-1);
                         mp_rat_mul(neg_k, temp, neg_k);
                         num_Cleanup(temp);
-                        
-                        /* Build: (y-k)^2 / (4p) + h */
-                        mp_rat four_p = num_FromInt(4);
-                        mp_rat_mul(four_p, result->a, four_p);
                         
                         /* Build: (y-k)^2 */
                         pcas_ast_t *y_squared = ast_MakeBinary(OP_POW,
@@ -1301,28 +1260,27 @@ void execute_conic() {
                                 ast_MakeNumber(neg_k)),
                             ast_MakeNumber(num_FromInt(2)));
                         
-                        /* Build: (y-k)^2 / (4p) */
-                        pcas_ast_t *fraction = ast_MakeBinary(OP_DIV, y_squared,
-                            ast_MakeNumber(four_p));
+                        /* Build: 4p */
+                        mp_rat four_p = num_FromInt(4);
+                        mp_rat_mul(four_p, result->a, four_p);
                         
-                        /* Build: (y-k)^2 / (4p) + h = x */
-                        formula = ast_MakeBinary(OP_ADD, fraction,
-                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
-                                ast_MakeNumber(neg_h)));
+                        /* Build: (x-h) */
+                        pcas_ast_t *x_minus_h = ast_MakeBinary(OP_ADD, 
+                            ast_MakeSymbol(SYM_X),
+                            ast_MakeNumber(neg_h));
                         
-                        /* Simplify display */
-                        char *h_str = num_ToString(result->center_h, 6);
-                        char *k_str = num_ToString(result->center_k, 6);
-                        char *p_str = num_ToString(result->a, 6);
-                        sprintf(buffer, "Parabola: x = (y-%s)^2/(4*%s) + %s", k_str, p_str, h_str);
-                        console_write(buffer);
-                        free(h_str);
-                        free(k_str);
-                        free(p_str);
+                        /* Build: 4p(x-h) */
+                        pcas_ast_t *rhs = ast_MakeBinary(OP_MULT, 
+                            ast_MakeNumber(four_p),
+                            x_minus_h);
+                        
+                        /* (y-k)^2 = 4p(x-h) */
+                        formula = ast_MakeBinary(OP_ADD, y_squared, 
+                            ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), rhs));
+                        console_write("Parabola (y-k)^2=4p(x-h)");
                         
                     } else if (!a_nonzero && c_nonzero) {
                         /* (x-h)^2 = 4p(y-k) */
-                        /* Rearranged for graphing: y = (1/4p)(x-h)^2 + k */
                         mp_rat neg_h = num_Copy(result->center_h);
                         mp_rat temp = num_FromInt(-1);
                         mp_rat_mul(neg_h, temp, neg_h);
@@ -1333,68 +1291,36 @@ void execute_conic() {
                         mp_rat_mul(neg_k, temp, neg_k);
                         num_Cleanup(temp);
                         
-                        /* Build: (x-h)^2 / (4p) + k */
-                        mp_rat four_p = num_FromInt(4);
-                        mp_rat_mul(four_p, result->a, four_p);
-                        
                         /* Build: (x-h)^2 */
                         pcas_ast_t *x_squared = ast_MakeBinary(OP_POW,
                             ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
                                 ast_MakeNumber(neg_h)),
                             ast_MakeNumber(num_FromInt(2)));
                         
-                        /* Build: (x-h)^2 / (4p) */
-                        pcas_ast_t *fraction = ast_MakeBinary(OP_DIV, x_squared,
-                            ast_MakeNumber(four_p));
+                        /* Build: 4p (result->a stores p) */
+                        mp_rat four_p = num_FromInt(4);
+                        mp_rat_mul(four_p, result->a, four_p);
                         
-                        /* Build: (x-h)^2 / (4p) + k = y */
-                        formula = ast_MakeBinary(OP_ADD, fraction,
-                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
-                                ast_MakeNumber(neg_k)));
+                        /* Build: (y-k) */
+                        pcas_ast_t *y_minus_k = ast_MakeBinary(OP_ADD, 
+                            ast_MakeSymbol(SYM_Y),
+                            ast_MakeNumber(neg_k));
                         
-                        /* Simplify display */
-                        char *h_str = num_ToString(result->center_h, 6);
-                        char *k_str = num_ToString(result->center_k, 6);
-                        char *p_str = num_ToString(result->a, 6);
-                        sprintf(buffer, "Parabola: y = (x-%s)^2/(4*%s) + %s", h_str, p_str, k_str);
-                        console_write(buffer);
-                        free(h_str);
-                        free(k_str);
-                        free(p_str);
+                        /* Build: 4p(y-k) */
+                        pcas_ast_t *rhs = ast_MakeBinary(OP_MULT, 
+                            ast_MakeNumber(four_p),
+                            y_minus_k);
+                        
+                        /* (x-h)^2 = 4p(y-k) */
+                        formula = ast_MakeBinary(OP_ADD, x_squared, 
+                            ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), rhs));
+                        console_write("Parabola (x-h)^2=4p(y-k)");
                     } else {
                         console_write("Parabola: degenerate");
                     }
                     
-                    /* Display parabola properties */
-                    char *h_str = num_ToString(result->center_h, 6);
-                    char *k_str = num_ToString(result->center_k, 6);
-                    char *focus_x_str = num_ToString(result->focus_x, 6);
-                    char *focus_y_str = num_ToString(result->focus_y, 6);
-                    
-                    sprintf(buffer, "Vertex: (%s,%s)", h_str, k_str);
-                    console_write(buffer);
-                    sprintf(buffer, "Focus: (%s,%s)", focus_x_str, focus_y_str);
-                    console_write(buffer);
-                    
-                    if (mp_rat_compare_value(result->C, 0, 1) != 0) {
-                        /* Vertical axis, directrix is y = ... */
-                        char *dir_str = num_ToString(result->directrix_offset, 6);
-                        sprintf(buffer, "Directrix: y = %s", dir_str);
-                        free(dir_str);
-                    } else {
-                        /* Horizontal axis, directrix is x = ... */
-                        char *dir_str = num_ToString(result->directrix_offset, 6);
-                        sprintf(buffer, "Directrix: x = %s", dir_str);
-                        free(dir_str);
-                    }
-                    console_write(buffer);
-                    
                     free(a_str);
                     free(c_str);
-                    free(h_str);
-                    free(k_str);
-                    free(focus_x_str);
-                    free(focus_y_str);
                 } else if(result->type == CONIC_HYPERBOLA) {
                     /* (x-h)^2/a^2 - (y-k)^2/b^2 = 1 */
                     mp_rat neg_h = num_Copy(result->center_h);
@@ -1422,36 +1348,6 @@ void execute_conic() {
                     formula = ast_MakeBinary(OP_ADD, x_term, 
                         ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), y_term));
                     console_write("Hyperbola formula in Y3");
-                    
-                    /* Display hyperbola properties */
-                    char *h_str = num_ToString(result->center_h, 6);
-                    char *k_str = num_ToString(result->center_k, 6);
-                    char *a_str = num_ToString(result->a, 6);
-                    char *b_str = num_ToString(result->b, 6);
-                    char *c_str = num_ToString(result->c_dist, 6);
-                    char *fx_str = num_ToString(result->focus_x, 6);
-                    char *fy_str = num_ToString(result->focus_y, 6);
-                    char *m1_str = num_ToString(result->asymp_m1, 6);
-                    char *m2_str = num_ToString(result->asymp_m2, 6);
-                    
-                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
-                    console_write(buffer);
-                    sprintf(buffer, "Focus: (%s,%s)", fx_str, fy_str);
-                    console_write(buffer);
-                    sprintf(buffer, "Asymp: m=%s,%s", m1_str, m2_str);
-                    console_write(buffer);
-                    sprintf(buffer, "a²=%s b²=%s c=%s", a_str, b_str, c_str);
-                    console_write(buffer);
-                    
-                    free(h_str);
-                    free(k_str);
-                    free(a_str);
-                    free(b_str);
-                    free(c_str);
-                    free(fx_str);
-                    free(fy_str);
-                    free(m1_str);
-                    free(m2_str);
                 }
                 
                 /* Write formula to Y3 if we built one */

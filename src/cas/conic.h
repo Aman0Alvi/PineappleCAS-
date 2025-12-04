@@ -35,23 +35,6 @@ typedef struct {
     /* For ellipse/hyperbola: distance from center to focus */
     mp_rat c_dist;
     
-    /* For circles: radius */
-    mp_rat radius;
-    
-    /* For parabolas: focal parameter p */
-    mp_rat focal_param;
-    
-    /* For parabolas, ellipses, hyperbolas: focus coordinates (focus_x, focus_y) */
-    /* For parabolas with vertical axis: focus_y = center_k + focal_param */
-    /* For parabolas with horizontal axis: focus_x = center_h + focal_param */
-    mp_rat focus_x, focus_y;
-    
-    /* For parabolas: directrix equation (stored as offset) */
-    mp_rat directrix_offset;
-    
-    /* For hyperbolas: asymptote slopes (m1, m2) */
-    mp_rat asymp_m1, asymp_m2;
-    
     /* Canonical form: expression after completing the square */
     pcas_ast_t *canonical_form;
     

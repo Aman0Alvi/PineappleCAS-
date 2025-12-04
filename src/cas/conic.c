@@ -565,119 +565,6 @@ static void compute_canonical_params(ConicResult *result) {
 }
 
 /*
- * Compute detailed conic properties (foci, directrix, asymptotes, etc.)
- */
-static void compute_conic_properties(ConicResult *result) {
-    if (result == NULL) return;
-    
-    /* Initialize new fields */
-    result->radius = num_FromInt(0);
-    result->focal_param = num_FromInt(0);
-    result->focus_x = num_FromInt(0);
-    result->focus_y = num_FromInt(0);
-    result->directrix_offset = num_FromInt(0);
-    result->asymp_m1 = num_FromInt(0);
-    result->asymp_m2 = num_FromInt(0);
-    
-    switch (result->type) {
-        case CONIC_CIRCLE: {
-            /* For circle: radius = sqrt(a) where (x-h)^2 + (y-k)^2 = a */
-            /* result->a stores the rhs value after completing square */
-            result->radius = num_Copy(result->a);
-            break;
-        }
-        
-        case CONIC_PARABOLA: {
-            /* For parabola: result->a already contains focal parameter p */
-            result->focal_param = num_Copy(result->a);
-            
-            /* Determine if vertical or horizontal axis */
-            int c_nonzero = mp_rat_compare_value(result->C, 0, 1) != 0;
-            
-            if (c_nonzero) {
-                /* Vertical axis: (x-h)^2 = 4p(y-k), opens up/down */
-                /* Focus: (h, k+p), Directrix: y = k-p */
-                result->focus_x = num_Copy(result->center_h);
-                result->focus_y = num_Copy(result->center_k);
-                mp_rat_add(result->focus_y, result->focal_param, result->focus_y);
-                
-                result->directrix_offset = num_Copy(result->center_k);
-                mp_rat_sub(result->directrix_offset, result->focal_param, result->directrix_offset);
-            } else {
-                /* Horizontal axis: (y-k)^2 = 4p(x-h), opens left/right */
-                /* Focus: (h+p, k), Directrix: x = h-p */
-                result->focus_x = num_Copy(result->center_h);
-                mp_rat_add(result->focus_x, result->focal_param, result->focus_x);
-                result->focus_y = num_Copy(result->center_k);
-                
-                result->directrix_offset = num_Copy(result->center_h);
-                mp_rat_sub(result->directrix_offset, result->focal_param, result->directrix_offset);
-            }
-            break;
-        }
-        
-        case CONIC_ELLIPSE: {
-            /* For ellipse: c = sqrt(a^2 - b^2) where a > b */
-            /* Foci at (h±c, k) if horizontal, (h, k±c) if vertical */
-            /* result->c_dist already contains the distance to focus */
-            
-            /* Determine major axis direction */
-            int a_gt_b = mp_rat_compare(result->a, result->b) > 0;
-            
-            if (a_gt_b) {
-                /* Major axis is horizontal */
-                result->focus_x = num_Copy(result->center_h);
-                mp_rat_add(result->focus_x, result->c_dist, result->focus_x);
-                result->focus_y = num_Copy(result->center_k);
-            } else {
-                /* Major axis is vertical */
-                result->focus_x = num_Copy(result->center_h);
-                result->focus_y = num_Copy(result->center_k);
-                mp_rat_add(result->focus_y, result->c_dist, result->focus_y);
-            }
-            break;
-        }
-        
-        case CONIC_HYPERBOLA: {
-            /* For hyperbola: c = sqrt(a^2 + b^2) */
-            /* Foci at (h±c, k) if horizontal, (h, k±c) if vertical */
-            /* Asymptotes: y - k = ±(b/a)(x - h) */
-            /* result->c_dist contains distance to focus */
-            
-            int a_nonzero = mp_rat_compare_value(result->A, 0, 1) != 0;
-            
-            if (a_nonzero) {
-                /* Horizontal transverse axis */
-                result->focus_x = num_Copy(result->center_h);
-                mp_rat_add(result->focus_x, result->c_dist, result->focus_x);
-                result->focus_y = num_Copy(result->center_k);
-                
-                /* Asymptote slopes: ±b/a */
-                result->asymp_m1 = num_Copy(result->b);
-                mp_rat_div(result->asymp_m1, result->a, result->asymp_m1);
-                
-                result->asymp_m2 = negate_rat(result->asymp_m1);
-            } else {
-                /* Vertical transverse axis */
-                result->focus_x = num_Copy(result->center_h);
-                result->focus_y = num_Copy(result->center_k);
-                mp_rat_add(result->focus_y, result->c_dist, result->focus_y);
-                
-                /* Asymptote slopes: ±a/b */
-                result->asymp_m1 = num_Copy(result->a);
-                mp_rat_div(result->asymp_m1, result->b, result->asymp_m1);
-                
-                result->asymp_m2 = negate_rat(result->asymp_m1);
-            }
-            break;
-        }
-        
-        default:
-            break;
-    }
-}
-
-/*
  * Main function: Classify a conic section
  */
 ConicResult *conic_Classify(pcas_ast_t *expression, mp_rat rhs_value) {
@@ -718,9 +605,6 @@ ConicResult *conic_Classify(pcas_ast_t *expression, mp_rat rhs_value) {
     
     /* Compute canonical form parameters */
     compute_canonical_params(result);
-    
-    /* Compute detailed conic properties */
-    compute_conic_properties(result);
     
     /* Set type name and formula info */
     switch (result->type) {
@@ -771,13 +655,6 @@ void conic_ResultCleanup(ConicResult *result) {
     num_Cleanup(result->a);
     num_Cleanup(result->b);
     num_Cleanup(result->c_dist);
-    num_Cleanup(result->radius);
-    num_Cleanup(result->focal_param);
-    num_Cleanup(result->focus_x);
-    num_Cleanup(result->focus_y);
-    num_Cleanup(result->directrix_offset);
-    num_Cleanup(result->asymp_m1);
-    num_Cleanup(result->asymp_m2);
     
     if (result->canonical_form != NULL) {
         ast_Cleanup(result->canonical_form);
