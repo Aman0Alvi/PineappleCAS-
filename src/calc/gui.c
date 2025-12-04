@@ -16,6 +16,7 @@
 #include "../cas/derivative.h"
 #include "../cas/integral.h"
 #include "../cas/conic.h"
+#include "../cas/conic_display.h"
 
 #include "interface.h"
 
@@ -1364,6 +1365,24 @@ void execute_conic() {
                 free(d_str);
                 free(e_str);
                 free(f_str);
+
+                ConicProperties *props = conic_ComputeProperties(result);
+                if (props != NULL) {
+                    char buf[40];
+                    if (result->type == CONIC_PARABOLA) {
+                        char *v = num_ToString(props->center_x, 4);
+                        if (v) { sprintf(buffer, "Vertex x: %s", v); console_write(buffer); free(v); }
+                        v = num_ToString(props->focus_x, 4);
+                        if (v) { sprintf(buffer, "Focus x: %s", v); console_write(buffer); free(v); }
+                    } else if (result->type == CONIC_ELLIPSE) {
+                        char *v = num_ToString(props->semi_major, 4);
+                        if (v) { sprintf(buffer, "Semi-major: %s", v); console_write(buffer); free(v); }
+                    } else if (result->type == CONIC_HYPERBOLA) {
+                        char *v = num_ToString(props->center_x, 4);
+                        if (v) { sprintf(buffer, "Center x: %s", v); console_write(buffer); free(v); }
+                    }
+                    conic_PropertiesCleanup(props);
+                }
 
                 /* Clean up result */
                 conic_ResultCleanup(result);
