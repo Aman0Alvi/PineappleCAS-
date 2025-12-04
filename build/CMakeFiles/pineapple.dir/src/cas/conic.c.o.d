@@ -1,9 +1,9 @@
-CMakeFiles/pineapple.dir/src/parser.c.o: \
- /workspaces/PineappleCAS-/src/parser.c /usr/include/stdc-predef.h \
- /workspaces/PineappleCAS-/src/parser.h \
- /workspaces/PineappleCAS-/src/ast.h \
- /workspaces/PineappleCAS-/src/imath/imrat.h \
- /workspaces/PineappleCAS-/src/imath/imath.h \
+CMakeFiles/pineapple.dir/src/cas/conic.c.o: \
+ /workspaces/PineappleCAS-/src/cas/conic.c /usr/include/stdc-predef.h \
+ /workspaces/PineappleCAS-/src/cas/conic.h \
+ /workspaces/PineappleCAS-/src/cas/../ast.h \
+ /workspaces/PineappleCAS-/src/cas/../imath/imrat.h \
+ /workspaces/PineappleCAS-/src/cas/../imath/imath.h \
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h /usr/include/stdint.h \
  /usr/include/x86_64-linux-gnu/bits/libc-header-start.h \
  /usr/include/features.h /usr/include/features-time64.h \
@@ -22,10 +22,22 @@ CMakeFiles/pineapple.dir/src/parser.c.o: \
  /usr/include/x86_64-linux-gnu/bits/stdint-least.h \
  /usr/lib/gcc/x86_64-linux-gnu/13/include/limits.h \
  /usr/lib/gcc/x86_64-linux-gnu/13/include/syslimits.h \
- /usr/include/limits.h /workspaces/PineappleCAS-/src/error.h \
+ /usr/include/limits.h /workspaces/PineappleCAS-/src/cas/../error.h \
  /usr/include/stdlib.h /usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h \
  /usr/include/x86_64-linux-gnu/bits/floatn.h \
  /usr/include/x86_64-linux-gnu/bits/floatn-common.h \
  /usr/include/x86_64-linux-gnu/bits/stdlib-float.h \
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stdbool.h \
- /workspaces/PineappleCAS-/src/stack.h
+ /workspaces/PineappleCAS-/src/cas/cas.h \
+ /workspaces/PineappleCAS-/src/cas/derivative.h \
+ /workspaces/PineappleCAS-/src/cas/identities.h \
+ /workspaces/PineappleCAS-/src/cas/../parser.h \
+ /workspaces/PineappleCAS-/src/cas/../ast.h /usr/include/string.h \
+ /usr/include/stdio.h /usr/lib/gcc/x86_64-linux-gnu/13/include/stdarg.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__fpos_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__mbstate_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__fpos64_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/types/FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/stdio_lim.h

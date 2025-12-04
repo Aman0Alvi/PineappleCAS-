@@ -15,6 +15,7 @@
 #include "../cas/identities.h"
 #include "../cas/derivative.h"
 #include "../cas/integral.h"
+#include "../cas/conic.h"
 
 #include "interface.h"
 
@@ -95,13 +96,14 @@ char *dropdown_entries[NUM_DROPDOWN_ENTRIES] = {
 };
 
 #define NUM_IO 2
-#define NUM_FUNCTION 6
+#define NUM_FUNCTION 7
 #define NUM_SIMPLIFY 7
 #define NUM_EVALUATE 5
 #define NUM_EXPAND 3
 #define NUM_DERIVATIVE 2
 #define NUM_HELP 0
 #define NUM_ANTIDERIVATIVE 3
+#define NUM_CONIC 3
 
 view_t *io_context[NUM_IO];
 view_t *function_context[NUM_FUNCTION];
@@ -113,6 +115,9 @@ view_t *help_context[1];
 view_t *antiderivative_context[NUM_ANTIDERIVATIVE];
 view_t *antideriv_ibp_checkbox;
 view_t *button_antiderivative;
+view_t *conic_context[NUM_CONIC];
+view_t *conic_rhs_dropdown;
+view_t *button_conic;
 
 view_t *from_drop, *to_drop;
 
@@ -131,6 +136,7 @@ typedef enum {
     CONTEXT_EXPAND,
     CONTEXT_DERIVATIVE,
     CONTEXT_ANTIDERIVATIVE,
+    CONTEXT_CONIC,
     CONTEXT_HELP,
     NUM_CONTEXTS
 } Context;
@@ -143,13 +149,14 @@ unsigned elements_in_context[NUM_CONTEXTS] = {
     NUM_EXPAND,
     NUM_DERIVATIVE,
     NUM_ANTIDERIVATIVE,
+    NUM_CONIC,
     NUM_HELP
 };
 
 view_t **context_lookup[NUM_CONTEXTS] = {
     io_context, function_context, simplify_context,
     evaluate_context, expand_context, derivative_context,
-    antiderivative_context,
+    antiderivative_context, conic_context,
     help_context
 };
 
@@ -281,6 +288,8 @@ void draw_context(Context c) {
     if(c == CONTEXT_EVALUATE) {
         gfx_PrintStringXY("From: ", 124 + 25, 96 + 12 + 10 - TEXT_HEIGHT / 2);
         gfx_PrintStringXY("To: ", 124 + 25, 96 + 12 + 24 + 10 - TEXT_HEIGHT / 2);
+    } else if(c == CONTEXT_CONIC) {
+        gfx_PrintStringXY("RHS value: ", 124, 96 + 12 - TEXT_HEIGHT / 2);
     } else if(c == CONTEXT_HELP) {
         gfx_PrintStringXY("View https://github.com/", 115, 80 + 10 * 0);
         gfx_PrintStringXY("nathanfarlow/PineappleCAS", 115, 80 + 10 * 1);
@@ -315,6 +324,7 @@ void draw_console() {
     view_draw(console_button);
 
     console_drawn = true;
+    console_index = 0;  /* Reset text index when drawing new console */
 }
 
 void console_write(char *text) {
@@ -331,6 +341,7 @@ void execute_evaluate();
 void execute_expand();
 void execute_derivative();
 void execute_antiderivative();
+void execute_conic();
 
 /*the key lookup tables for os_GetCSC()*/
 const char alpha_table[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5C, 0x00, 0x57, 0x52, 0x4D, 0x48, 0x00, 0x00, 0x00, 0x40, 0x56, 0x51, 0x4C, 0x47, 0x00, 0x00, 0x00, 0x5A, 0x55, 0x50, 0x4B, 0x46, 0x43, 0x00, 0x00, 0x59, 0x54, 0x4F, 0x4A, 0x45, 0x42, 0x58, 0x00, 0x58, 0x53, 0x4E, 0x49, 0x44, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -465,6 +476,7 @@ void handle_input(uint8_t key) {
                 else if(v == button_expand)     execute_expand();
                 else if(v == button_derivative) execute_derivative();
                 else if(v == button_antiderivative) execute_antiderivative();
+                else if(v == button_conic)      execute_conic();
                 break;
             default:
                 break;
@@ -497,7 +509,8 @@ void gui_Init() {
     function_context[2] = view_create_label(26, 112, "Expand");
     function_context[3] = view_create_label(26, 128, "Derivative");
     function_context[4] = view_create_label(26, 144, "Antiderivative");
-    function_context[5] = view_create_label(26, 160, "Help");
+    function_context[5] = view_create_label(26, 160, "Conic");
+    function_context[6] = view_create_label(26, 176, "Help");
 
     simplify_context[0] = view_create_checkbox(124, 80 + 12 * 0, "Basic identities", true);
     simplify_context[1] = view_create_checkbox(124, 80 + 12 * 1, "Trig identities", true);
@@ -525,6 +538,12 @@ void gui_Init() {
     antideriv_ibp_checkbox    = view_create_checkbox(124, 80 + 12 * 1, "Use integration by parts (IBP)", false);
     antiderivative_context[1] = antideriv_ibp_checkbox;
     antiderivative_context[2] = button_antiderivative = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Antideriv");
+
+    /* === Conic context: right-hand side value input, output form selection, button === */
+    conic_context[0] = view_create_label(124, 80, "Classify conic section");
+    conic_rhs_dropdown = view_create_dropdown(124 + 90, 96 + 12 - 10, 0);
+    conic_context[1] = conic_rhs_dropdown;
+    conic_context[2] = button_conic = view_create_button(10 + 2 + 100 + (LCD_WIDTH - 10 - 10 - 2 - 100) / 2, 184, "Classify");
 
     console_button = view_create_button(LCD_WIDTH / 2, LCD_HEIGHT - LCD_HEIGHT / 6 - 20, "Close");
 
@@ -1074,6 +1093,396 @@ void execute_antiderivative() {
                 sprintf(buffer, "Failed. %s.", error_text[err]);
                 console_write(buffer);
             }
+
+        } else {
+            console_write("Failed. Empty input.");
+        }
+
+    } else {
+        sprintf(buffer, "Failed. %s.", error_text[err]);
+        console_write(buffer);
+        if(from_drop->index == 20)
+            console_write("Make sure Ans is a string.");
+    }
+
+    console_button->active = true;
+    view_draw(console_button);
+}
+
+void execute_conic() {
+    char buffer[150];
+    char h_str[50], k_str[50], a_str_val[50], b_str_val[50];
+    pcas_ast_t *expression, *rhs_expression, *full_equation;
+    pcas_error_t err;
+    ConicResult *result;
+    mp_rat rhs_value;
+
+    /* Draw fresh console for output */
+    draw_background();
+    draw_context(CONTEXT_IO);
+    draw_context(CONTEXT_FUNCTION);
+    draw_context(current_context);
+    console_drawn = false;
+    console_write("Parsing input...");
+
+    expression = parse_from_dropdown_index(from_drop->index, &err);
+
+    if(err == E_SUCCESS) {
+
+        if(expression != NULL) {
+
+            console_write("Classifying conic...");
+
+            /* Parse RHS expression from dropdown BEFORE simplifying LHS */
+            rhs_expression = parse_from_dropdown_index(conic_rhs_dropdown->index, &err);
+            
+            /* Build full equation FIRST: LHS - RHS = 0 */
+            if(rhs_expression != NULL) {
+                /* Create full equation: LHS - RHS = 0 by adding LHS + (-1)*RHS */
+                pcas_ast_t *neg_rhs = ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), rhs_expression);
+                full_equation = ast_MakeBinary(OP_ADD, expression, neg_rhs);
+                
+                /* Now simplify the ENTIRE combined equation to flatten and normalize */
+                simplify(full_equation, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
+                
+                /* RHS is part of full equation now, so pass 0 as rhs_value */
+                rhs_value = num_FromInt(0);
+            } else {
+                /* No RHS specified, treat as = 0 */
+                full_equation = expression;
+                simplify(full_equation, SIMP_NORMALIZE | SIMP_COMMUTATIVE | SIMP_RATIONAL | SIMP_EVAL | SIMP_LIKE_TERMS);
+                rhs_value = num_FromInt(0);
+            }
+
+            /* Call the conic classifier with the full equation */
+            result = conic_Classify(full_equation, rhs_value);
+
+            if(result != NULL) {
+                char *a_str, *c_str, *d_str, *e_str, *f_str;
+                
+                /* Output classification result */
+                sprintf(buffer, "Type: %s", result->type_name);
+                console_write(buffer);
+                
+                /* Display coefficients (compact format) */
+                a_str = num_ToString(result->A, 4);
+                c_str = num_ToString(result->C, 4);
+                d_str = num_ToString(result->D, 4);
+                e_str = num_ToString(result->E, 4);
+                f_str = num_ToString(result->F, 4);
+                
+                sprintf(buffer, "A=%s C=%s D=%s", a_str, c_str, d_str);
+                console_write(buffer);
+                sprintf(buffer, "E=%s F=%s", e_str, f_str);
+                console_write(buffer);
+                
+                /* Build and store canonical form as an AST in Y3 */
+                pcas_ast_t *formula = NULL;
+                
+                if(result->type == CONIC_CIRCLE) {
+                    /* (x-h)^2 + (y-k)^2 = r^2 */
+                    mp_rat neg_h = num_Copy(result->center_h);
+                    mp_rat temp = num_FromInt(-1);
+                    mp_rat_mul(neg_h, temp, neg_h);
+                    num_Cleanup(temp);
+                    
+                    mp_rat neg_k = num_Copy(result->center_k);
+                    temp = num_FromInt(-1);
+                    mp_rat_mul(neg_k, temp, neg_k);
+                    num_Cleanup(temp);
+                    
+                    pcas_ast_t *x_term = ast_MakeBinary(OP_POW, 
+                        ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X), 
+                            ast_MakeNumber(neg_h)),
+                        ast_MakeNumber(num_FromInt(2)));
+                    pcas_ast_t *y_term = ast_MakeBinary(OP_POW,
+                        ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
+                            ast_MakeNumber(neg_k)),
+                        ast_MakeNumber(num_FromInt(2)));
+                    formula = ast_MakeBinary(OP_ADD, x_term, y_term);
+                    console_write("Circle formula in Y3");
+                    
+                    /* Display circle properties */
+                    char *h_str = num_ToString(result->center_h, 6);
+                    char *k_str = num_ToString(result->center_k, 6);
+                    char *r_str = num_ToString(result->radius, 6);
+                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
+                    console_write(buffer);
+                    sprintf(buffer, "Radius: %s", r_str);
+                    console_write(buffer);
+                    free(h_str);
+                    free(k_str);
+                    free(r_str);
+                } else if(result->type == CONIC_ELLIPSE) {
+                    /* (x-h)^2/a^2 + (y-k)^2/b^2 = 1 */
+                    mp_rat neg_h = num_Copy(result->center_h);
+                    mp_rat temp = num_FromInt(-1);
+                    mp_rat_mul(neg_h, temp, neg_h);
+                    num_Cleanup(temp);
+                    
+                    mp_rat neg_k = num_Copy(result->center_k);
+                    temp = num_FromInt(-1);
+                    mp_rat_mul(neg_k, temp, neg_k);
+                    num_Cleanup(temp);
+                    
+                    /* result->a and result->b are already a^2 and b^2 */
+                    /* Create numerators as (x-h)^2 and (y-k)^2 */
+                    pcas_ast_t *x_num = ast_MakeBinary(OP_POW,
+                        ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
+                            ast_MakeNumber(neg_h)),
+                        ast_MakeNumber(num_FromInt(2)));
+                    pcas_ast_t *y_num = ast_MakeBinary(OP_POW,
+                        ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
+                            ast_MakeNumber(neg_k)),
+                        ast_MakeNumber(num_FromInt(2)));
+                    
+                    /* Divide numerators by a^2 and b^2 */
+                    pcas_ast_t *x_term = ast_MakeBinary(OP_DIV, x_num,
+                        ast_MakeNumber(num_Copy(result->a)));
+                    pcas_ast_t *y_term = ast_MakeBinary(OP_DIV, y_num,
+                        ast_MakeNumber(num_Copy(result->b)));
+                    formula = ast_MakeBinary(OP_ADD, x_term, y_term);
+                    console_write("Ellipse formula in Y3");
+                    
+                    /* Display ellipse properties */
+                    char *h_str = num_ToString(result->center_h, 6);
+                    char *k_str = num_ToString(result->center_k, 6);
+                    char *a_str = num_ToString(result->a, 6);
+                    char *b_str = num_ToString(result->b, 6);
+                    char *c_str = num_ToString(result->c_dist, 6);
+                    char *fx_str = num_ToString(result->focus_x, 6);
+                    char *fy_str = num_ToString(result->focus_y, 6);
+                    
+                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
+                    console_write(buffer);
+                    sprintf(buffer, "Focus: (%s,%s)", fx_str, fy_str);
+                    console_write(buffer);
+                    sprintf(buffer, "a²=%s b²=%s c=%s", a_str, b_str, c_str);
+                    console_write(buffer);
+                    
+                    free(h_str);
+                    free(k_str);
+                    free(a_str);
+                    free(b_str);
+                    free(c_str);
+                    free(fx_str);
+                    free(fy_str);
+                } else if(result->type == CONIC_PARABOLA) {
+                    /* Determine parabola orientation from coefficients:
+                     * If A != 0 and C = 0: (y-k)^2 = 4p(x-h)  (opens left/right)
+                     * If A = 0 and C != 0: (x-h)^2 = 4p(y-k)  (opens up/down)
+                     */
+                    char *a_str = num_ToString(result->A, 4);
+                    char *c_str = num_ToString(result->C, 4);
+                    
+                    int a_nonzero = mp_rat_compare_value(result->A, 0, 1) != 0;
+                    int c_nonzero = mp_rat_compare_value(result->C, 0, 1) != 0;
+                    
+                    if (a_nonzero && !c_nonzero) {
+                        /* (y-k)^2 = 4p(x-h)  where p is in result->a */
+                        /* Rearranged for graphing: x = (y-k)^2/(4p) + h */
+                        mp_rat neg_h = num_Copy(result->center_h);
+                        mp_rat temp = num_FromInt(-1);
+                        mp_rat_mul(neg_h, temp, neg_h);
+                        num_Cleanup(temp);
+                        
+                        mp_rat neg_k = num_Copy(result->center_k);
+                        temp = num_FromInt(-1);
+                        mp_rat_mul(neg_k, temp, neg_k);
+                        num_Cleanup(temp);
+                        
+                        /* Build: (y-k)^2 / (4p) + h */
+                        mp_rat four_p = num_FromInt(4);
+                        mp_rat_mul(four_p, result->a, four_p);
+                        
+                        /* Build: (y-k)^2 */
+                        pcas_ast_t *y_squared = ast_MakeBinary(OP_POW,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
+                                ast_MakeNumber(neg_k)),
+                            ast_MakeNumber(num_FromInt(2)));
+                        
+                        /* Build: (y-k)^2 / (4p) */
+                        pcas_ast_t *fraction = ast_MakeBinary(OP_DIV, y_squared,
+                            ast_MakeNumber(four_p));
+                        
+                        /* Build: (y-k)^2 / (4p) + h = x */
+                        formula = ast_MakeBinary(OP_ADD, fraction,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
+                                ast_MakeNumber(neg_h)));
+                        
+                        /* Simplify display */
+                        char *h_str = num_ToString(result->center_h, 6);
+                        char *k_str = num_ToString(result->center_k, 6);
+                        char *p_str = num_ToString(result->a, 6);
+                        sprintf(buffer, "Parabola: x = (y-%s)^2/(4*%s) + %s", k_str, p_str, h_str);
+                        console_write(buffer);
+                        free(h_str);
+                        free(k_str);
+                        free(p_str);
+                        
+                    } else if (!a_nonzero && c_nonzero) {
+                        /* (x-h)^2 = 4p(y-k) */
+                        /* Rearranged for graphing: y = (1/4p)(x-h)^2 + k */
+                        mp_rat neg_h = num_Copy(result->center_h);
+                        mp_rat temp = num_FromInt(-1);
+                        mp_rat_mul(neg_h, temp, neg_h);
+                        num_Cleanup(temp);
+                        
+                        mp_rat neg_k = num_Copy(result->center_k);
+                        temp = num_FromInt(-1);
+                        mp_rat_mul(neg_k, temp, neg_k);
+                        num_Cleanup(temp);
+                        
+                        /* Build: (x-h)^2 / (4p) + k */
+                        mp_rat four_p = num_FromInt(4);
+                        mp_rat_mul(four_p, result->a, four_p);
+                        
+                        /* Build: (x-h)^2 */
+                        pcas_ast_t *x_squared = ast_MakeBinary(OP_POW,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
+                                ast_MakeNumber(neg_h)),
+                            ast_MakeNumber(num_FromInt(2)));
+                        
+                        /* Build: (x-h)^2 / (4p) */
+                        pcas_ast_t *fraction = ast_MakeBinary(OP_DIV, x_squared,
+                            ast_MakeNumber(four_p));
+                        
+                        /* Build: (x-h)^2 / (4p) + k = y */
+                        formula = ast_MakeBinary(OP_ADD, fraction,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
+                                ast_MakeNumber(neg_k)));
+                        
+                        /* Simplify display */
+                        char *h_str = num_ToString(result->center_h, 6);
+                        char *k_str = num_ToString(result->center_k, 6);
+                        char *p_str = num_ToString(result->a, 6);
+                        sprintf(buffer, "Parabola: y = (x-%s)^2/(4*%s) + %s", h_str, p_str, k_str);
+                        console_write(buffer);
+                        free(h_str);
+                        free(k_str);
+                        free(p_str);
+                    } else {
+                        console_write("Parabola: degenerate");
+                    }
+                    
+                    /* Display parabola properties */
+                    char *h_str = num_ToString(result->center_h, 6);
+                    char *k_str = num_ToString(result->center_k, 6);
+                    char *focus_x_str = num_ToString(result->focus_x, 6);
+                    char *focus_y_str = num_ToString(result->focus_y, 6);
+                    
+                    sprintf(buffer, "Vertex: (%s,%s)", h_str, k_str);
+                    console_write(buffer);
+                    sprintf(buffer, "Focus: (%s,%s)", focus_x_str, focus_y_str);
+                    console_write(buffer);
+                    
+                    if (mp_rat_compare_value(result->C, 0, 1) != 0) {
+                        /* Vertical axis, directrix is y = ... */
+                        char *dir_str = num_ToString(result->directrix_offset, 6);
+                        sprintf(buffer, "Directrix: y = %s", dir_str);
+                        free(dir_str);
+                    } else {
+                        /* Horizontal axis, directrix is x = ... */
+                        char *dir_str = num_ToString(result->directrix_offset, 6);
+                        sprintf(buffer, "Directrix: x = %s", dir_str);
+                        free(dir_str);
+                    }
+                    console_write(buffer);
+                    
+                    free(a_str);
+                    free(c_str);
+                    free(h_str);
+                    free(k_str);
+                    free(focus_x_str);
+                    free(focus_y_str);
+                } else if(result->type == CONIC_HYPERBOLA) {
+                    /* (x-h)^2/a^2 - (y-k)^2/b^2 = 1 */
+                    mp_rat neg_h = num_Copy(result->center_h);
+                    mp_rat temp = num_FromInt(-1);
+                    mp_rat_mul(neg_h, temp, neg_h);
+                    num_Cleanup(temp);
+                    
+                    mp_rat neg_k = num_Copy(result->center_k);
+                    temp = num_FromInt(-1);
+                    mp_rat_mul(neg_k, temp, neg_k);
+                    num_Cleanup(temp);
+                    
+                    pcas_ast_t *x_term = ast_MakeBinary(OP_DIV,
+                        ast_MakeBinary(OP_POW,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_X),
+                                ast_MakeNumber(neg_h)),
+                            ast_MakeNumber(num_FromInt(2))),
+                        ast_MakeNumber(num_Copy(result->a)));
+                    pcas_ast_t *y_term = ast_MakeBinary(OP_DIV,
+                        ast_MakeBinary(OP_POW,
+                            ast_MakeBinary(OP_ADD, ast_MakeSymbol(SYM_Y),
+                                ast_MakeNumber(neg_k)),
+                            ast_MakeNumber(num_FromInt(2))),
+                        ast_MakeNumber(num_Copy(result->b)));
+                    formula = ast_MakeBinary(OP_ADD, x_term, 
+                        ast_MakeBinary(OP_MULT, ast_MakeNumber(num_FromInt(-1)), y_term));
+                    console_write("Hyperbola formula in Y3");
+                    
+                    /* Display hyperbola properties */
+                    char *h_str = num_ToString(result->center_h, 6);
+                    char *k_str = num_ToString(result->center_k, 6);
+                    char *a_str = num_ToString(result->a, 6);
+                    char *b_str = num_ToString(result->b, 6);
+                    char *c_str = num_ToString(result->c_dist, 6);
+                    char *fx_str = num_ToString(result->focus_x, 6);
+                    char *fy_str = num_ToString(result->focus_y, 6);
+                    char *m1_str = num_ToString(result->asymp_m1, 6);
+                    char *m2_str = num_ToString(result->asymp_m2, 6);
+                    
+                    sprintf(buffer, "Center: (%s,%s)", h_str, k_str);
+                    console_write(buffer);
+                    sprintf(buffer, "Focus: (%s,%s)", fx_str, fy_str);
+                    console_write(buffer);
+                    sprintf(buffer, "Asymp: m=%s,%s", m1_str, m2_str);
+                    console_write(buffer);
+                    sprintf(buffer, "a²=%s b²=%s c=%s", a_str, b_str, c_str);
+                    console_write(buffer);
+                    
+                    free(h_str);
+                    free(k_str);
+                    free(a_str);
+                    free(b_str);
+                    free(c_str);
+                    free(fx_str);
+                    free(fy_str);
+                    free(m1_str);
+                    free(m2_str);
+                }
+                
+                /* Write formula to Y3 if we built one */
+                if (formula != NULL) {
+                    pcas_error_t write_err;
+                    write_to_tok((uint8_t*)OS_VAR_Y3, formula, &write_err);
+                    if (write_err != E_SUCCESS) {
+                        console_write("Could not write to Y3");
+                    }
+                }
+                
+                free(a_str);
+                free(c_str);
+                free(d_str);
+                free(e_str);
+                free(f_str);
+
+                /* Clean up result */
+                conic_ResultCleanup(result);
+                console_write("Success.");
+            } else {
+                console_write("Failed. Classification error.");
+            }
+
+            /* Clean up */
+            if(rhs_expression != NULL && full_equation != expression) {
+                ast_Cleanup(full_equation);
+            } else {
+                ast_Cleanup(expression);
+            }
+            num_Cleanup(rhs_value);
 
         } else {
             console_write("Failed. Empty input.");

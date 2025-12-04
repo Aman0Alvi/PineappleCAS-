@@ -1010,6 +1010,7 @@ static pcas_ast_t *integrate_x_power_any(pcas_ast_t *expr, pcas_ast_t *var) {
      ∫ e^{ax} sin(bx) dx = e^{ax}(a sin(bx) - b cos(bx)) / (a^2 + b^2)
      ∫ e^{ax} cos(bx) dx = e^{ax}(a cos(bx) + b sin(bx)) / (a^2 + b^2)
    Accepts exponent a*x[+c] and trig b*x[+d]. */
+__attribute__((unused))
 static pcas_ast_t *integrate_exp_times_trig_linear(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!expr || !is_op(expr, OP_MULT)) return NULL;
 
@@ -1377,6 +1378,7 @@ static bool match_poly_kx2_minus_a2(pcas_ast_t *poly, pcas_ast_t *var,
    = (c_num/c_den) * ( - sqrt(A x^2 - a^2) / (a^2 x) ) + C
    Note: result is independent of A’s square root (scales away).
 */
+__attribute__((unused))
 static pcas_ast_t *integrate_recip_x2_times_root_k2x2_minus_a2(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var) {
     if (!den || !var) return NULL;
 
@@ -1448,6 +1450,7 @@ static pcas_ast_t *integrate_recip_x2_times_root_k2x2_minus_a2(pcas_ast_t *num, 
       ∫ dx / ( x^2 * sqrt( (k x)^2 - a^2 ) )
         = [ sqrt( (k x)^2 - a^2 ) ] / ( a^2 * k * x )
 */
+__attribute__((unused))
 static pcas_ast_t *integrate_recip_x2_times_kx2_minus_a2_root(pcas_ast_t *num, pcas_ast_t *den, pcas_ast_t *var) {
     if (!den || !var) return NULL;
 
@@ -2144,6 +2147,7 @@ static bool read_poly_power_of_var(pcas_ast_t *node, pcas_ast_t *var, int *deg_o
 
 
 /* ∫ x^n ln x dx = (x^{n+1}/(n+1)) ln x - x^{n+1}/(n+1)^2, n>=0 */
+__attribute__((unused))
 static pcas_ast_t *integrate_xn_lnx_product(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!expr || !is_op(expr, OP_MULT)) return NULL;
 
@@ -2185,6 +2189,7 @@ static pcas_ast_t *integrate_xn_lnx_product(pcas_ast_t *expr, pcas_ast_t *var) {
 
 /* ∫ x^n e^{a x} dx with e^{a x [+ b]} allowed (b folds into the power node).
    Finite non-recursive IBP (tabular). Returns NULL if pattern not matched. */
+__attribute__((unused))
 static pcas_ast_t *integrate_poly_times_exp_linear(pcas_ast_t *expr, pcas_ast_t *var) {
     if (!expr || !is_op(expr, OP_MULT)) return NULL;
 

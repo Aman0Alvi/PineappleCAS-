@@ -238,6 +238,30 @@ src/calc/main.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pineapple.dir/build.make CMakeFiles/pineapple.dir/src/calc/main.c.s
 .PHONY : src/calc/main.c.s
 
+src/cas/conic.o: src/cas/conic.c.o
+.PHONY : src/cas/conic.o
+
+# target to build an object file
+src/cas/conic.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pineapple.dir/build.make CMakeFiles/pineapple.dir/src/cas/conic.c.o
+.PHONY : src/cas/conic.c.o
+
+src/cas/conic.i: src/cas/conic.c.i
+.PHONY : src/cas/conic.i
+
+# target to preprocess a source file
+src/cas/conic.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pineapple.dir/build.make CMakeFiles/pineapple.dir/src/cas/conic.c.i
+.PHONY : src/cas/conic.c.i
+
+src/cas/conic.s: src/cas/conic.c.s
+.PHONY : src/cas/conic.s
+
+# target to generate assembly for a file
+src/cas/conic.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pineapple.dir/build.make CMakeFiles/pineapple.dir/src/cas/conic.c.s
+.PHONY : src/cas/conic.c.s
+
 src/cas/derivative.o: src/cas/derivative.c.o
 .PHONY : src/cas/derivative.o
 
@@ -668,6 +692,9 @@ help:
 	@echo "... src/calc/main.o"
 	@echo "... src/calc/main.i"
 	@echo "... src/calc/main.s"
+	@echo "... src/cas/conic.o"
+	@echo "... src/cas/conic.i"
+	@echo "... src/cas/conic.s"
 	@echo "... src/cas/derivative.o"
 	@echo "... src/cas/derivative.i"
 	@echo "... src/cas/derivative.s"

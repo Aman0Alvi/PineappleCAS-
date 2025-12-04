@@ -7,6 +7,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/pineapple.dir/src/calc/interface.c.o.d"
   "CMakeFiles/pineapple.dir/src/calc/main.c.o"
   "CMakeFiles/pineapple.dir/src/calc/main.c.o.d"
+  "CMakeFiles/pineapple.dir/src/cas/conic.c.o"
+  "CMakeFiles/pineapple.dir/src/cas/conic.c.o.d"
   "CMakeFiles/pineapple.dir/src/cas/derivative.c.o"
   "CMakeFiles/pineapple.dir/src/cas/derivative.c.o.d"
   "CMakeFiles/pineapple.dir/src/cas/eval.c.o"

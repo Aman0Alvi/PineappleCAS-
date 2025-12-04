@@ -125,10 +125,24 @@ CMakeFiles/pineapple.dir/src/calc/main.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/pineapple.dir/src/calc/main.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /workspaces/PineappleCAS-/src/calc/main.c -o CMakeFiles/pineapple.dir/src/calc/main.c.s
 
+CMakeFiles/pineapple.dir/src/cas/conic.c.o: CMakeFiles/pineapple.dir/flags.make
+CMakeFiles/pineapple.dir/src/cas/conic.c.o: /workspaces/PineappleCAS-/src/cas/conic.c
+CMakeFiles/pineapple.dir/src/cas/conic.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/pineapple.dir/src/cas/conic.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/conic.c.o -MF CMakeFiles/pineapple.dir/src/cas/conic.c.o.d -o CMakeFiles/pineapple.dir/src/cas/conic.c.o -c /workspaces/PineappleCAS-/src/cas/conic.c
+
+CMakeFiles/pineapple.dir/src/cas/conic.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/pineapple.dir/src/cas/conic.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /workspaces/PineappleCAS-/src/cas/conic.c > CMakeFiles/pineapple.dir/src/cas/conic.c.i
+
+CMakeFiles/pineapple.dir/src/cas/conic.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/pineapple.dir/src/cas/conic.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /workspaces/PineappleCAS-/src/cas/conic.c -o CMakeFiles/pineapple.dir/src/cas/conic.c.s
+
 CMakeFiles/pineapple.dir/src/cas/derivative.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/derivative.c.o: /workspaces/PineappleCAS-/src/cas/derivative.c
 CMakeFiles/pineapple.dir/src/cas/derivative.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/pineapple.dir/src/cas/derivative.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object CMakeFiles/pineapple.dir/src/cas/derivative.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/derivative.c.o -MF CMakeFiles/pineapple.dir/src/cas/derivative.c.o.d -o CMakeFiles/pineapple.dir/src/cas/derivative.c.o -c /workspaces/PineappleCAS-/src/cas/derivative.c
 
 CMakeFiles/pineapple.dir/src/cas/derivative.c.i: cmake_force
@@ -142,7 +156,7 @@ CMakeFiles/pineapple.dir/src/cas/derivative.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/eval.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/eval.c.o: /workspaces/PineappleCAS-/src/cas/eval.c
 CMakeFiles/pineapple.dir/src/cas/eval.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object CMakeFiles/pineapple.dir/src/cas/eval.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/pineapple.dir/src/cas/eval.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/eval.c.o -MF CMakeFiles/pineapple.dir/src/cas/eval.c.o.d -o CMakeFiles/pineapple.dir/src/cas/eval.c.o -c /workspaces/PineappleCAS-/src/cas/eval.c
 
 CMakeFiles/pineapple.dir/src/cas/eval.c.i: cmake_force
@@ -156,7 +170,7 @@ CMakeFiles/pineapple.dir/src/cas/eval.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/expand.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/expand.c.o: /workspaces/PineappleCAS-/src/cas/expand.c
 CMakeFiles/pineapple.dir/src/cas/expand.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/pineapple.dir/src/cas/expand.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object CMakeFiles/pineapple.dir/src/cas/expand.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/expand.c.o -MF CMakeFiles/pineapple.dir/src/cas/expand.c.o.d -o CMakeFiles/pineapple.dir/src/cas/expand.c.o -c /workspaces/PineappleCAS-/src/cas/expand.c
 
 CMakeFiles/pineapple.dir/src/cas/expand.c.i: cmake_force
@@ -170,7 +184,7 @@ CMakeFiles/pineapple.dir/src/cas/expand.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/factor.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/factor.c.o: /workspaces/PineappleCAS-/src/cas/factor.c
 CMakeFiles/pineapple.dir/src/cas/factor.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object CMakeFiles/pineapple.dir/src/cas/factor.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/pineapple.dir/src/cas/factor.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/factor.c.o -MF CMakeFiles/pineapple.dir/src/cas/factor.c.o.d -o CMakeFiles/pineapple.dir/src/cas/factor.c.o -c /workspaces/PineappleCAS-/src/cas/factor.c
 
 CMakeFiles/pineapple.dir/src/cas/factor.c.i: cmake_force
@@ -184,7 +198,7 @@ CMakeFiles/pineapple.dir/src/cas/factor.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/identities.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/identities.c.o: /workspaces/PineappleCAS-/src/cas/identities.c
 CMakeFiles/pineapple.dir/src/cas/identities.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/pineapple.dir/src/cas/identities.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object CMakeFiles/pineapple.dir/src/cas/identities.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/identities.c.o -MF CMakeFiles/pineapple.dir/src/cas/identities.c.o.d -o CMakeFiles/pineapple.dir/src/cas/identities.c.o -c /workspaces/PineappleCAS-/src/cas/identities.c
 
 CMakeFiles/pineapple.dir/src/cas/identities.c.i: cmake_force
@@ -198,7 +212,7 @@ CMakeFiles/pineapple.dir/src/cas/identities.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/integral.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/integral.c.o: /workspaces/PineappleCAS-/src/cas/integral.c
 CMakeFiles/pineapple.dir/src/cas/integral.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object CMakeFiles/pineapple.dir/src/cas/integral.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object CMakeFiles/pineapple.dir/src/cas/integral.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/integral.c.o -MF CMakeFiles/pineapple.dir/src/cas/integral.c.o.d -o CMakeFiles/pineapple.dir/src/cas/integral.c.o -c /workspaces/PineappleCAS-/src/cas/integral.c
 
 CMakeFiles/pineapple.dir/src/cas/integral.c.i: cmake_force
@@ -212,7 +226,7 @@ CMakeFiles/pineapple.dir/src/cas/integral.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/cas/simplify.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/cas/simplify.c.o: /workspaces/PineappleCAS-/src/cas/simplify.c
 CMakeFiles/pineapple.dir/src/cas/simplify.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object CMakeFiles/pineapple.dir/src/cas/simplify.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object CMakeFiles/pineapple.dir/src/cas/simplify.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/cas/simplify.c.o -MF CMakeFiles/pineapple.dir/src/cas/simplify.c.o.d -o CMakeFiles/pineapple.dir/src/cas/simplify.c.o -c /workspaces/PineappleCAS-/src/cas/simplify.c
 
 CMakeFiles/pineapple.dir/src/cas/simplify.c.i: cmake_force
@@ -226,7 +240,7 @@ CMakeFiles/pineapple.dir/src/cas/simplify.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/dbg.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/dbg.c.o: /workspaces/PineappleCAS-/src/dbg.c
 CMakeFiles/pineapple.dir/src/dbg.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object CMakeFiles/pineapple.dir/src/dbg.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object CMakeFiles/pineapple.dir/src/dbg.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/dbg.c.o -MF CMakeFiles/pineapple.dir/src/dbg.c.o.d -o CMakeFiles/pineapple.dir/src/dbg.c.o -c /workspaces/PineappleCAS-/src/dbg.c
 
 CMakeFiles/pineapple.dir/src/dbg.c.i: cmake_force
@@ -240,7 +254,7 @@ CMakeFiles/pineapple.dir/src/dbg.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/error.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/error.c.o: /workspaces/PineappleCAS-/src/error.c
 CMakeFiles/pineapple.dir/src/error.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object CMakeFiles/pineapple.dir/src/error.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object CMakeFiles/pineapple.dir/src/error.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/error.c.o -MF CMakeFiles/pineapple.dir/src/error.c.o.d -o CMakeFiles/pineapple.dir/src/error.c.o -c /workspaces/PineappleCAS-/src/error.c
 
 CMakeFiles/pineapple.dir/src/error.c.i: cmake_force
@@ -254,7 +268,7 @@ CMakeFiles/pineapple.dir/src/error.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/export.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/export.c.o: /workspaces/PineappleCAS-/src/export.c
 CMakeFiles/pineapple.dir/src/export.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object CMakeFiles/pineapple.dir/src/export.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object CMakeFiles/pineapple.dir/src/export.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/export.c.o -MF CMakeFiles/pineapple.dir/src/export.c.o.d -o CMakeFiles/pineapple.dir/src/export.c.o -c /workspaces/PineappleCAS-/src/export.c
 
 CMakeFiles/pineapple.dir/src/export.c.i: cmake_force
@@ -268,7 +282,7 @@ CMakeFiles/pineapple.dir/src/export.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/imath/imath.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/imath/imath.c.o: /workspaces/PineappleCAS-/src/imath/imath.c
 CMakeFiles/pineapple.dir/src/imath/imath.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object CMakeFiles/pineapple.dir/src/imath/imath.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object CMakeFiles/pineapple.dir/src/imath/imath.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/imath/imath.c.o -MF CMakeFiles/pineapple.dir/src/imath/imath.c.o.d -o CMakeFiles/pineapple.dir/src/imath/imath.c.o -c /workspaces/PineappleCAS-/src/imath/imath.c
 
 CMakeFiles/pineapple.dir/src/imath/imath.c.i: cmake_force
@@ -282,7 +296,7 @@ CMakeFiles/pineapple.dir/src/imath/imath.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/imath/imrat.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/imath/imrat.c.o: /workspaces/PineappleCAS-/src/imath/imrat.c
 CMakeFiles/pineapple.dir/src/imath/imrat.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object CMakeFiles/pineapple.dir/src/imath/imrat.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object CMakeFiles/pineapple.dir/src/imath/imrat.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/imath/imrat.c.o -MF CMakeFiles/pineapple.dir/src/imath/imrat.c.o.d -o CMakeFiles/pineapple.dir/src/imath/imrat.c.o -c /workspaces/PineappleCAS-/src/imath/imrat.c
 
 CMakeFiles/pineapple.dir/src/imath/imrat.c.i: cmake_force
@@ -296,7 +310,7 @@ CMakeFiles/pineapple.dir/src/imath/imrat.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/parser.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/parser.c.o: /workspaces/PineappleCAS-/src/parser.c
 CMakeFiles/pineapple.dir/src/parser.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object CMakeFiles/pineapple.dir/src/parser.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/pineapple.dir/src/parser.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/parser.c.o -MF CMakeFiles/pineapple.dir/src/parser.c.o.d -o CMakeFiles/pineapple.dir/src/parser.c.o -c /workspaces/PineappleCAS-/src/parser.c
 
 CMakeFiles/pineapple.dir/src/parser.c.i: cmake_force
@@ -310,7 +324,7 @@ CMakeFiles/pineapple.dir/src/parser.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/pc/main.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/pc/main.c.o: /workspaces/PineappleCAS-/src/pc/main.c
 CMakeFiles/pineapple.dir/src/pc/main.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/pineapple.dir/src/pc/main.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/pineapple.dir/src/pc/main.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/pc/main.c.o -MF CMakeFiles/pineapple.dir/src/pc/main.c.o.d -o CMakeFiles/pineapple.dir/src/pc/main.c.o -c /workspaces/PineappleCAS-/src/pc/main.c
 
 CMakeFiles/pineapple.dir/src/pc/main.c.i: cmake_force
@@ -324,7 +338,7 @@ CMakeFiles/pineapple.dir/src/pc/main.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/pc/tests.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/pc/tests.c.o: /workspaces/PineappleCAS-/src/pc/tests.c
 CMakeFiles/pineapple.dir/src/pc/tests.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/pineapple.dir/src/pc/tests.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/pineapple.dir/src/pc/tests.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/pc/tests.c.o -MF CMakeFiles/pineapple.dir/src/pc/tests.c.o.d -o CMakeFiles/pineapple.dir/src/pc/tests.c.o -c /workspaces/PineappleCAS-/src/pc/tests.c
 
 CMakeFiles/pineapple.dir/src/pc/tests.c.i: cmake_force
@@ -338,7 +352,7 @@ CMakeFiles/pineapple.dir/src/pc/tests.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/pc/yvar.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/pc/yvar.c.o: /workspaces/PineappleCAS-/src/pc/yvar.c
 CMakeFiles/pineapple.dir/src/pc/yvar.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/pineapple.dir/src/pc/yvar.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/pineapple.dir/src/pc/yvar.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/pc/yvar.c.o -MF CMakeFiles/pineapple.dir/src/pc/yvar.c.o.d -o CMakeFiles/pineapple.dir/src/pc/yvar.c.o -c /workspaces/PineappleCAS-/src/pc/yvar.c
 
 CMakeFiles/pineapple.dir/src/pc/yvar.c.i: cmake_force
@@ -352,7 +366,7 @@ CMakeFiles/pineapple.dir/src/pc/yvar.c.s: cmake_force
 CMakeFiles/pineapple.dir/src/stack.c.o: CMakeFiles/pineapple.dir/flags.make
 CMakeFiles/pineapple.dir/src/stack.c.o: /workspaces/PineappleCAS-/src/stack.c
 CMakeFiles/pineapple.dir/src/stack.c.o: CMakeFiles/pineapple.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/pineapple.dir/src/stack.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object CMakeFiles/pineapple.dir/src/stack.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pineapple.dir/src/stack.c.o -MF CMakeFiles/pineapple.dir/src/stack.c.o.d -o CMakeFiles/pineapple.dir/src/stack.c.o -c /workspaces/PineappleCAS-/src/stack.c
 
 CMakeFiles/pineapple.dir/src/stack.c.i: cmake_force
@@ -369,6 +383,7 @@ pineapple_OBJECTS = \
 "CMakeFiles/pineapple.dir/src/calc/gui.c.o" \
 "CMakeFiles/pineapple.dir/src/calc/interface.c.o" \
 "CMakeFiles/pineapple.dir/src/calc/main.c.o" \
+"CMakeFiles/pineapple.dir/src/cas/conic.c.o" \
 "CMakeFiles/pineapple.dir/src/cas/derivative.c.o" \
 "CMakeFiles/pineapple.dir/src/cas/eval.c.o" \
 "CMakeFiles/pineapple.dir/src/cas/expand.c.o" \
@@ -394,6 +409,7 @@ pineapple: CMakeFiles/pineapple.dir/src/ast.c.o
 pineapple: CMakeFiles/pineapple.dir/src/calc/gui.c.o
 pineapple: CMakeFiles/pineapple.dir/src/calc/interface.c.o
 pineapple: CMakeFiles/pineapple.dir/src/calc/main.c.o
+pineapple: CMakeFiles/pineapple.dir/src/cas/conic.c.o
 pineapple: CMakeFiles/pineapple.dir/src/cas/derivative.c.o
 pineapple: CMakeFiles/pineapple.dir/src/cas/eval.c.o
 pineapple: CMakeFiles/pineapple.dir/src/cas/expand.c.o
@@ -413,7 +429,7 @@ pineapple: CMakeFiles/pineapple.dir/src/pc/yvar.c.o
 pineapple: CMakeFiles/pineapple.dir/src/stack.c.o
 pineapple: CMakeFiles/pineapple.dir/build.make
 pineapple: CMakeFiles/pineapple.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Linking C executable pineapple"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/workspaces/PineappleCAS-/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Linking C executable pineapple"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/pineapple.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

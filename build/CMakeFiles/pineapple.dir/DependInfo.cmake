@@ -12,6 +12,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/workspaces/PineappleCAS-/src/calc/gui.c" "CMakeFiles/pineapple.dir/src/calc/gui.c.o" "gcc" "CMakeFiles/pineapple.dir/src/calc/gui.c.o.d"
   "/workspaces/PineappleCAS-/src/calc/interface.c" "CMakeFiles/pineapple.dir/src/calc/interface.c.o" "gcc" "CMakeFiles/pineapple.dir/src/calc/interface.c.o.d"
   "/workspaces/PineappleCAS-/src/calc/main.c" "CMakeFiles/pineapple.dir/src/calc/main.c.o" "gcc" "CMakeFiles/pineapple.dir/src/calc/main.c.o.d"
+  "/workspaces/PineappleCAS-/src/cas/conic.c" "CMakeFiles/pineapple.dir/src/cas/conic.c.o" "gcc" "CMakeFiles/pineapple.dir/src/cas/conic.c.o.d"
   "/workspaces/PineappleCAS-/src/cas/derivative.c" "CMakeFiles/pineapple.dir/src/cas/derivative.c.o" "gcc" "CMakeFiles/pineapple.dir/src/cas/derivative.c.o.d"
   "/workspaces/PineappleCAS-/src/cas/eval.c" "CMakeFiles/pineapple.dir/src/cas/eval.c.o" "gcc" "CMakeFiles/pineapple.dir/src/cas/eval.c.o.d"
   "/workspaces/PineappleCAS-/src/cas/expand.c" "CMakeFiles/pineapple.dir/src/cas/expand.c.o" "gcc" "CMakeFiles/pineapple.dir/src/cas/expand.c.o.d"
